@@ -1,0 +1,23 @@
+{
+  "name": "himalaya-impl",
+  "version": "0.1.0",
+  "description": "The himalaya@1 provider `cli`: typed mail actions built as himalaya argv strings and executed THROUGH the general service (container | ssh | ssh+container | local | http), so himalaya works with no binary on the workbench PATH. Not-configured is a valid state.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "himalaya", "version": 1, "provider": "cli" }],
+  "policies": {
+    "himalaya": { "provide": "himalaya@1", "require": "general-service@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The plugin is transport agnostic: `general` is a general-service@1 config row (type + params) naming WHERE himalaya runs; no mail account, image, host or path is hard-coded here.",
+    "properties": {
+      "general": {
+        "type": "object",
+        "description": "general-service@1 config, e.g. { \"type\": \"container\", \"params\": { \"engine\": \"docker-compose\", \"compose\": { \"project_dir\": \"${env:OMNI_DIR}\", \"service\": \"toolbox\" } } }"
+      },
+      "timeoutMs": { "type": "number", "description": "Per-call timeout handed to the transport (ms)" },
+      "generalWaitMs": { "type": "number", "default": 1500, "description": "Bound of the SOFT wait for the general service at load (ordering hint, never a dependency)" }
+    }
+  }
+}

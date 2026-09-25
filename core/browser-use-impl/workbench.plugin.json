@@ -1,0 +1,30 @@
+{
+  "name": "browser-use-impl",
+  "version": "0.1.0",
+  "description": "The browser-use@1 SERVICE HOST (provider `registry`): it owns the provider registry, the selection policy (explicit provider, else configured default, else the single registered provider, else the typed no-provider error), the seam bounds (snapshot node cap, text cap, screenshot byte cap, call/navigation/action deadlines, session cap) and the typed delegation of a call to the selected provider. Providers are SEPARATE plugins that register themselves here; this plugin imports no provider and launches no browser, so the manifest declares execution none.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "browser-use", "version": 1, "provider": "registry" }],
+  "policies": {
+    "browser-use": { "provide": "browser-use@1", "require": "browser-use@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Which provider answers by default and the bounds of one call.",
+    "properties": {
+      "provider": {
+        "type": "string",
+        "description": "Default provider id (e.g. playwright). Absent: take the single registered provider, or fail with browser-use.ambiguous."
+      },
+      "maxSessions": { "type": "number", "default": 4, "description": "Live sessions allowed at once across providers; one more is a typed browser-use.session-limit." },
+      "maxSnapshotNodes": { "type": "number", "default": 120, "description": "Node cap of ONE snapshot answer (a truncated answer says so)." },
+      "maxTextChars": { "type": "number", "default": 20000, "description": "Inline character cap of extract/evaluate answers (the hard ceiling of the seam is 200000)." },
+      "maxImageBytes": { "type": "number", "default": 8388608, "description": "Byte cap of ONE screenshot FILE: a bigger image is a typed browser-use.oversized naming the real size, never a silent drop." },
+      "timeoutMs": { "type": "number", "default": 60000, "description": "Wall-clock bound of one call." },
+      "navigationTimeoutMs": { "type": "number", "default": 30000, "description": "Default navigation budget when the caller names none." },
+      "actionTimeoutMs": { "type": "number", "default": 10000, "description": "Default per-action budget (click/type/wait) when the caller names none." },
+      "screenshotDir": { "type": "string", "description": "FALLBACK directory for screenshot FILES. The provider's own `screenshotDir` (plugins.browser-use-playwright) WINS when it names one; the seam default is <tmpdir>/workbench-browser-use. The answer is always an ABSOLUTE path, never inline base64." },
+      "storageStateDir": { "type": "string", "description": "Directory holding the per-session storage-state files (default: <tmpdir>/workbench-browser-use/state); the same convention web-session uses, so a session can be continued across the two." }
+    }
+  }
+}

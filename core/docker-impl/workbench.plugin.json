@@ -1,0 +1,38 @@
+{
+  "name": "docker-impl",
+  "version": "0.1.0",
+  "description": "The docker@1 provider `docker-compose-cli`: runs ONE command string INSIDE a container (docker compose exec, or docker run/exec). The container shell evaluates the input; an unreachable target fails instead of running on the host.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "docker", "version": 1, "provider": "docker-compose-cli" }],
+  "policies": {
+    "docker": { "provide": "docker@1", "require": "docker@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "engine": { "type": "string", "enum": ["docker-compose", "docker"], "default": "docker-compose" },
+      "compose": {
+        "type": "object",
+        "description": "engine=docker-compose: { project_dir, service, file?, env_file?, project_name?, profile? }",
+        "properties": {
+          "project_dir": { "type": "string" },
+          "service": { "type": "string" },
+          "file": { "type": "string" },
+          "env_file": { "type": "string" },
+          "project_name": { "type": "string" },
+          "profile": { "type": "string" }
+        },
+        "required": ["project_dir", "service"]
+      },
+      "container": { "type": "string", "description": "engine=docker: container name/id to exec into" },
+      "image": { "type": "string", "description": "engine=docker: image to run when `container` is absent" },
+      "entrypoint": { "type": "string" },
+      "network": { "type": "string" },
+      "mounts": { "type": "array", "description": "engine=docker: -v values" },
+      "binary": { "type": "string", "default": "docker" },
+      "timeoutMs": { "type": "number", "default": 60000 },
+      "maxOutputBytes": { "type": "number", "default": 4194304 }
+    }
+  }
+}

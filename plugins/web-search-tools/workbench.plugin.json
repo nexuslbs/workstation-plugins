@@ -1,0 +1,15 @@
+{
+  "name": "web-search-tools",
+  "version": "0.1.0",
+  "description": "External web-SEARCH consumer: exposes the `web-search@1` capability as the tools 'web search' (normalized results + caps/spill) and 'web search providers' (configured/available engines + the config row to add) - provider agnostic, no engine named",
+  "entry": "index.ts",
+  "capabilities": [
+    "tool:web search",
+    "tool:web search providers"
+  ],
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; the engine selection, the count caps and the spill behaviour belong to the providers' rows (web-search-impl, web-search-stub, web-search-tavily).",
+    "properties": {}
+  }
+}

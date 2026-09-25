@@ -1,0 +1,14 @@
+{
+  "name": "email-tools",
+  "version": "0.1.0",
+  "description": "External email CONSUMER: exposes the email capability (email@1) as the tools 'email accounts', 'email list', 'email get' and 'email code' - provider agnostic, it only touches ctx.email",
+  "entry": "index.ts",
+  "capabilities": ["tool:email accounts", "tool:email list", "tool:email get", "tool:email code"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "defaultListLimit": { "type": "number", "default": 10, "description": "limit used when a caller omits it" },
+      "maxListLimit": { "type": "number", "default": 50, "description": "cap a caller may ask for (never above the definition's 100)" }
+    }
+  }
+}

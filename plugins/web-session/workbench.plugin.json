@@ -1,0 +1,77 @@
+{
+  "name": "web-session",
+  "version": "0.1.0",
+  "description": "External web-session CONSUMER: the ONE multiplexed browser tool `session` (action enum open|act|read|close) with persistent storage-state sessions per site label, auto (re-)login from credential NAMEs, change DELTAS instead of page dumps, CSS/XPath/role+name selector reads, and JSON/XHR endpoint discovery with direct endpoint calls - all on the chromium shared with web-page",
+  "entry": "index.ts",
+  "capabilities": ["tool:session"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "stateDir": { "type": "string", "description": "where the storage-state files and the spill files live (default: <tmp>/workbench-web-session; the dev config points it at .workbench/web-session, which is git-ignored)" },
+      "spillDir": { "type": "string", "description": "where an oversized answer spills (default: <stateDir>/spill)" },
+      "idleTtlSeconds": { "type": "number", "default": 900, "description": "idle seconds after which a live session is evicted (its state is persisted first; 0 = never idle)" },
+      "maxSessions": { "type": "number", "default": 4, "description": "how many sessions may be live at once; the least recently used is evicted first" },
+      "defaultSite": { "type": "string", "description": "the site label used when a call omits `site` (default: the only configured site)" },
+      "maxChars": { "type": "number", "default": 6000, "description": "default `max_chars` of a returned body/outline" },
+      "hardMaxChars": { "type": "number", "default": 60000, "description": "cap a caller can never exceed" },
+      "outlineMaxChars": { "type": "number", "default": 1200, "description": "cap of the `open`/`read` outline" },
+      "deltaMaxChars": { "type": "number", "default": 2500, "description": "cap of a delta payload (what changed after an act)" },
+      "maxDeltaNodes": { "type": "number", "default": 60, "description": "how many text nodes a delta may report per list" },
+      "maxSelectorNodes": { "type": "number", "default": 50, "description": "how many elements a selector-scoped read may return" },
+      "maxEndpoints": { "type": "number", "default": 30, "description": "how many discovered JSON/XHR endpoints the list may hold" },
+      "maxSteps": { "type": "number", "default": 20, "description": "how many `act` steps one call may carry" },
+      "navigationTimeoutMs": { "type": "number", "default": 30000, "description": "page.goto timeout" },
+      "actionTimeoutMs": { "type": "number", "default": 10000, "description": "per-step timeout and bounded settle budget" },
+      "retries": { "type": "number", "default": 1, "description": "extra navigation attempts after a transport failure" },
+      "waitUntil": { "type": "string", "enum": ["domcontentloaded", "load", "networkidle"], "default": "domcontentloaded", "description": "navigation wait strategy (a bounded settle runs after it)" },
+      "executablePath": { "type": "string", "description": "chromium binary; absent: playwright resolves it (PLAYWRIGHT_BROWSERS_PATH)" },
+      "browserArgs": { "type": "array", "items": { "type": "string" }, "description": "extra chromium argv" },
+      "userAgent": { "type": "string" },
+      "blockResourceTypes": { "type": "array", "items": { "type": "string" }, "description": "resource types never downloaded (default image, media, font)" },
+      "proxy": { "type": "object", "properties": { "server": { "type": "string" }, "username": { "type": "string" }, "credential": { "type": "string" } }, "description": "per-request proxy; `credential` is a credential NAME resolved at launch time, never a value" },
+      "redact": { "type": "array", "items": { "type": "string" }, "description": "strings scrubbed from every error envelope" },
+      "sites": {
+        "type": "object",
+        "description": "the site table: label -> baseUrl + stateFile + allowOrigins + login flow + optional readPath. One entry per site; nothing is hardcoded in the plugin",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "baseUrl": { "type": "string", "description": "the site root; a relative call url resolves against it" },
+            "stateFile": { "type": "string", "description": "storage-state file (cookies + localStorage); default <stateDir>/state/<label>.json" },
+            "allowOrigins": { "type": "array", "items": { "type": "string" }, "description": "extra origins the site's JSON endpoints may live on (the site origin is always allowed)" },
+            "readPath": { "type": "object", "properties": { "api": { "type": "string" } }, "description": "API-first read: the endpoint ref used by `read` when no selector is given" },
+            "login": {
+              "type": "object",
+              "description": "the auto (re-)login flow; it runs when the `indicator` selector matches (or when no stored state was found)",
+              "properties": {
+                "url": { "type": "string", "description": "the login page (absolute, or relative to baseUrl)" },
+                "indicator": { "type": "string", "description": "selector that matches while LOGGED OUT" },
+                "submit": { "type": "string", "description": "the submit control; absent: Enter on the last field" },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string" },
+                      "selector": { "type": "string" },
+                      "credential": { "type": "string", "description": "credential NAME resolved through ctx.credentials at login time (never a value)" },
+                      "value": { "type": "string", "description": "a literal, non-secret value used when `credential` is absent" }
+                    }
+                  }
+                },
+                "success": {
+                  "type": "object",
+                  "properties": {
+                    "selector": { "type": "string" },
+                    "urlContains": { "type": "string" },
+                    "textContains": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

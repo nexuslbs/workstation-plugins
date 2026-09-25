@@ -1,0 +1,17 @@
+{
+  "name": "totp-rfc6238",
+  "version": "0.1.0",
+  "description": "External TOTP provider: implements totp@1 with RFC 4226 (HOTP) + RFC 6238 (TOTP) on node:crypto HMAC-SHA1/256/512 - named entries with a base32 key, current 6-digit code",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "totp", "version": 1, "provider": "rfc6238" }],
+  "config": {
+    "type": "object",
+    "description": "No `entries` is a valid state: the plugin then loads and reports 'not configured' without registering the provider.",
+    "properties": {
+      "entries": {
+        "type": "object",
+        "description": "One entry per name/label: { secret? | credential?, issuer?, account?, digits?, period?, algorithm? }. `secret` is a base32 key (a `${cred:NAME}` reference here is expanded by the core before apply, the preferred form); `credential` is a credential NAME resolved at CALL time through ctx.credentials, never a value. An entry with neither, or whose credential does not resolve, is reported as configured:false and fails only when it is used."
+      }
+    }
+  }
+}

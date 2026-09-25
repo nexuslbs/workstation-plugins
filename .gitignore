@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.workbench/
+# Runtime output of the browser-use provider: screenshots and the SPAWNED browser
+# profile. Never committed (the e2e test run writes it relative to the cwd).
+workbench-browser-use/
+# Operator-supplied runtime material for the PRIVATE source (see .env.example):
+# never committed, never referenced by value.
+.env
+.env.local
+*.log
+# Node's test reporter drops report.<date>.<pid>.<n>.json in the repo root when
+# the suites run; ignored so a local/test run never dirties the work tree.
+report.*.json
+.DS_Store

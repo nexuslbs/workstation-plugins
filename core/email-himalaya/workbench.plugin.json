@@ -1,0 +1,36 @@
+{
+  "name": "email-himalaya",
+  "version": "0.1.0",
+  "description": "External email PROVIDER (EmailHimalaya): implements email@1 ON TOP OF the himalaya@1 service (never a CLI/docker/ssh detail of its own). No `accounts` is a valid NOT-CONFIGURED state: the plugin loads, reports it and answers calls with a structured error.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "email", "version": 1, "provider": "himalaya" }],
+  "policies": {
+    "email": { "provide": "email@1", "require": "email@1" },
+    "himalaya": { "provide": "himalaya@1", "require": "general-service@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Accounts are LABELS mapped to himalaya account names; credentials are NAMES resolved at call time through the credentials capability, never values.",
+    "properties": {
+      "defaultAccount": {
+        "type": "string",
+        "description": "Account label used when a call passes no account; default: the first configured account"
+      },
+      "accounts": {
+        "type": "object",
+        "description": "Accounts by label: { address?, accountName?, credential?, folder? }. `accountName` is the account name in himalaya's own config (default: the label); `credential` is a credential NAME resolved at call time, never a value"
+      },
+      "registerWithKernel": {
+        "type": "boolean",
+        "default": true,
+        "description": "Also feed the kernel-hosted email@1 service when the deployment has one (backward compatibility); set false to serve only the plugins-repo `mail` service"
+      },
+      "himalayaWaitMs": {
+        "type": "number",
+        "default": 1500,
+        "description": "Bound of the SOFT wait for the himalaya service at load (ordering hint, never a dependency)"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "browser-use-tools",
+  "version": "0.1.0",
+  "description": "External browser-USE consumer: exposes the `browser-use@1` capability as the action-enum tool `browser` (providers | capabilities | open | navigate | snapshot | act | evaluate | extract | screenshot | tabs | wait | observe | state | sessions | close), so a caller can drive a real browser by name - navigate, read a compact snapshot with SHORT STABLE refs, act on a ref in a LATER call, extract readable content, screenshot to a file and reuse a storage state. Provider agnostic: no browser, engine or binary is named here.",
+  "entry": "index.ts",
+  "capabilities": ["tool:browser"],
+  "config": {
+    "type": "object",
+    "description": "The consumer registers one tool and shapes its parameters; the engine, the binary and the launch argv belong to the provider rows (browser-use-impl = the service host + the selection; browser-use-playwright = the chromium provider).",
+    "properties": {}
+  }
+}

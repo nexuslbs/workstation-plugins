@@ -1,0 +1,45 @@
+{
+  "name": "browser-use-playwright",
+  "version": "0.1.0",
+  "description": "The PLAYWRIGHT PROVIDER of the browser-use@1 seam (provider id `playwright`): it drives a real chromium through `playwright-core` - session lifecycle, navigate, the compact SNAPSHOT with SHORT STABLE refs, the full act vocabulary (click/type/fill/select/hover/scroll/press/upload/check/focus/waitFor/back/forward/reload), evaluate, readable extract (text/markdown/html/table/attributes/links/json), FILE screenshots, tabs, waits, downloads/network observation and storage-state reuse. It reuses the SHARED chromium launcher of this repository (`shared/browser.ts`) instead of forking a second browser stack, so `web-page`, `web-session` and this provider never launch competing browsers. It spawns a process, so it declares execution host; a deployment without a browser fails with the typed `browser-use.no-browser` error naming the exact prerequisite - never a silent fallback to a non-browser fetch.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "browser-use", "version": 1, "provider": "playwright" }],
+  "policies": {
+    "browser-use": { "provide": "browser-use@1", "require": "browser-use@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The browser this provider drives (binary or the playwright cache, launch argv, headless), the defaults of a session (viewport, locale, timezone, user agent, proxy) and where its files live (storage state, screenshots, downloads).",
+    "properties": {
+      "headless": { "type": "boolean", "default": true, "description": "Run the shared chromium without a window. It is a LAUNCH-time setting of the shared process, so a session cannot change it." },
+      "viewport": {
+        "type": "object",
+        "description": "Default viewport of a session (a session may override it).",
+        "properties": { "width": { "type": "number", "default": 1280 }, "height": { "type": "number", "default": 720 } }
+      },
+      "userAgent": { "type": "string", "description": "Default user agent of a session." },
+      "locale": { "type": "string", "description": "Default locale, e.g. `en-US`." },
+      "timezoneId": { "type": "string", "description": "Default IANA timezone, e.g. `Europe/Berlin`." },
+      "proxy": {
+        "type": "object",
+        "description": "Default proxy of a session. `credential` is the NAME of a credentials entry, never a value: it is resolved through the credentials service at launch time.",
+        "properties": {
+          "server": { "type": "string", "description": "e.g. `http://proxy.internal:3128`" },
+          "username": { "type": "string" },
+          "credential": { "type": "string", "description": "the NAME of the credential holding the proxy password" }
+        },
+        "required": ["server"]
+      },
+      "executablePath": { "type": "string", "description": "A chromium/chrome binary to launch. Absent: playwright resolves its own cache (`PLAYWRIGHT_BROWSERS_PATH`)." },
+      "browserArgs": { "type": "array", "items": { "type": "string" }, "description": "Extra chromium argv, handed over verbatim (argv, never a shell string)." },
+      "storageStateDir": { "type": "string", "description": "Where the per-session storage-state files live (default `<tmpdir>/workbench-browser-use/state`), the SAME convention `web-session` uses." },
+      "screenshotDir": { "type": "string", "description": "Where a screenshot without an explicit path is written (default `<tmpdir>/workbench-browser-use`; a relative value is resolved against the CWD). This provider OWNS the file it writes, so this value WINS over the host bound `plugins.browser-use-impl.screenshotDir`, and the answered path is always ABSOLUTE." },
+      "downloadDir": { "type": "string", "description": "Where a session's downloads are saved (default `<storageStateDir>/downloads`)." },
+      "launchTimeoutMs": { "type": "number", "default": 30000, "description": "Budget of the shared chromium launch." },
+      "defaultSession": { "type": "string", "default": "default", "description": "The session id a call uses when it names none." },
+      "observeLimit": { "type": "number", "default": 200, "description": "How many requests/downloads the per-session observer keeps." },
+      "sessionTtlSeconds": { "type": "number", "default": 0, "description": "Idle seconds after which a session's context is closed (0 = never)." }
+    }
+  }
+}

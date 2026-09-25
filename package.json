@@ -1,0 +1,21 @@
+{
+  "name": "workstation-plugins",
+  "version": "0.1.0",
+  "description": "workstation plugins - the external plugin source for the deepseek-harness workstation service (mirror of workbench-plugins speaking the harness tool/credentials API natively)",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

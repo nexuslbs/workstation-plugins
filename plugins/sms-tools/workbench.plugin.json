@@ -1,0 +1,24 @@
+{
+  "name": "sms-tools",
+  "version": "0.1.0",
+  "description": "External SMS consumer: exposes the sms@1 capability as the tools 'sms numbers', 'sms list', 'sms get' and 'sms code' - provider agnostic, no backend named",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; the numbers themselves belong to the provider's row.",
+    "properties": {
+      "defaultListLimit": {
+        "type": "integer",
+        "description": "Default 'limit' of the 'sms list' tool (default 10)."
+      },
+      "maxListLimit": {
+        "type": "integer",
+        "description": "Cap of the 'limit' the 'sms list' tool accepts (default 50, never above the contract's 100)."
+      },
+      "includeBodies": {
+        "type": "boolean",
+        "description": "When false the 'sms list' tool reports message metadata without the bodies (default true)."
+      }
+    }
+  }
+}

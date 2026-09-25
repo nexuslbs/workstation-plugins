@@ -1,0 +1,21 @@
+{
+  "name": "general-service-impl",
+  "version": "0.1.0",
+  "description": "The general-service@1 provider `config-dispatch`: ONE service whose config TYPE (local | container | ssh | ssh+container | http) selects the transport service at call time. No hard injection of the transports: only the type's service must be loaded, an unknown or missing one fails loudly before any command runs.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "general-service", "version": 1, "provider": "config-dispatch" }],
+  "policies": {
+    "general-service": { "provide": "general-service@1", "require": "general-service@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "loadAfterTimeoutMs": {
+        "type": "number",
+        "default": 500,
+        "description": "Bound of the SOFT, non-required wait for the transport services before this plugin provides its own (ordering hint, never a dependency)"
+      }
+    }
+  }
+}

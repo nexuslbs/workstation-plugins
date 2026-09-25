@@ -1,0 +1,17 @@
+{
+  "name": "totp-tools",
+  "version": "0.1.0",
+  "description": "External TOTP consumer: exposes the totp@1 capability as the tools 'totp list' (labels + metadata, never a secret) and 'totp code' (the current 6-digit code of a named entry) - provider agnostic, it only touches ctx.totp",
+  "entry": "index.ts",
+  "capabilities": ["tool:totp list", "tool:totp code"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "reportEntryMetadata": {
+        "type": "boolean",
+        "default": true,
+        "description": "include the entry's issuer/account in a `totp code` answer (default true)"
+      }
+    }
+  }
+}

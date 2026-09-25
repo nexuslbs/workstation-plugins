@@ -1,0 +1,23 @@
+{
+  "name": "shell-impl",
+  "version": "0.1.0",
+  "description": "The shell@1 provider `local-bash`: runs ONE command string through a LOCAL shell. The ONLY transport of this repository that executes on the workbench HOST, hence the explicit execution/policies declaration below.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "shell", "version": 1, "provider": "local-bash" }],
+  "policies": {
+    "shell": { "provide": "shell@1", "require": "shell@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Local shell of `general-service` type `local`: { shell, binary, cwd, timeoutMs, maxOutputBytes, env }.",
+    "properties": {
+      "shell": { "type": "string", "enum": ["bash", "sh", "zsh"], "default": "bash" },
+      "binary": { "type": "string", "description": "Absolute shell binary; overrides `shell`" },
+      "cwd": { "type": "string", "description": "Working directory of the command (default: the host process' own)" },
+      "timeoutMs": { "type": "number", "default": 30000 },
+      "maxOutputBytes": { "type": "number", "default": 4194304 },
+      "env": { "type": "object", "description": "Extra environment for the child process" }
+    }
+  }
+}

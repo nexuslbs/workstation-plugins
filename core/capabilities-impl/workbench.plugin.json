@@ -1,0 +1,34 @@
+{
+  "name": "capabilities-impl",
+  "version": "0.1.0",
+  "description": "The capability SERVICE HOST for the definitions of this repository that no provider hosts itself (`totp@1`, `sms@1`): it instantiates the Definition (`definitions/totp.ts`, `definitions/sms.ts`), declares every provider capability its sibling plugin manifests claim and provides the service under the capability name, so a provider plugin only registers a backend and a consumer only injects. Holds no backend, no key and no operator config.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [],
+  "config": {
+    "type": "object",
+    "description": "The host is provider-agnostic: which providers are declared comes from the sibling plugin manifests (`core/*/workbench.plugin.json`), never from this config. Every field here is optional.",
+    "properties": {
+      "source": {
+        "type": "string",
+        "default": "workbench-plugins",
+        "description": "The source label reported by `providers()` for the declared providers (display metadata mirroring the core's discovery `source`)."
+      },
+      "external": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether the declared providers came from an external source (display metadata mirroring the core's discovery `external`; this repository is always consumed as an EXTERNAL source)."
+      },
+      "totp": { "type": "boolean", "default": true, "description": "Host `totp@1` (set false to not provide `ctx.totp` at all)." },
+      "sms": { "type": "boolean", "default": true, "description": "Host `sms@1` (set false to not provide `ctx.sms` at all)." },
+      "totpProviders": {
+        "type": "array",
+        "description": "Provider ids to ENABLE, in precedence order (the definition's `setEnabled`). Absent = every declared provider."
+      },
+      "smsProviders": {
+        "type": "array",
+        "description": "Provider ids to ENABLE, in precedence order (the definition's `setEnabled`). Absent = every declared provider."
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "sms-twilio",
+  "version": "0.1.0",
+  "description": "External SMS provider: implements sms@1 (read-only) on the Twilio REST API 2010-04-01 - multiple numbers (one credential pair per label, different Twilio accounts allowed), a configurable default number, inbound listing and single-message read",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "sms", "version": 1, "provider": "twilio" }],
+  "config": {
+    "type": "object",
+    "description": "No `numbers` is a valid state: the plugin then loads and reports 'not configured' without registering the provider. Every request is READ-ONLY (GET on the Messages resource); sending SMS is not implemented.",
+    "properties": {
+      "defaultNumber": {
+        "type": "string",
+        "description": "Label of the number a call without an explicit reference resolves to. When absent the first configured label is the default."
+      },
+      "numbers": {
+        "type": "object",
+        "description": "One entry per LABEL: { number (the TO number whose inbox is read), accountSid (literal AC... or ${cred:NAME}), authToken (literal or ${cred:NAME}, never logged), apiBase?, description? }. A reference is resolved at CALL time through ctx.credentials, so a credential that is missing or empty leaves the plugin LOADED with that label reported configured:false; only a call for it fails."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "description": "HTTP timeout of one request in milliseconds (default 8000, max 60000)."
+      },
+      "maxPages": {
+        "type": "integer",
+        "description": "How many result pages one list() call may walk (default 3, max 10)."
+      },
+      "pageSize": {
+        "type": "integer",
+        "description": "PageSize asked of Twilio, capped at 100 (Twilio's own maximum)."
+      },
+      "maxBodyChars": {
+        "type": "integer",
+        "description": "Cap of a returned message body in characters (default 2000, the contract's cap)."
+      }
+    }
+  }
+}
