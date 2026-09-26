@@ -1,0 +1,25 @@
+{
+  "name": "web-search-gemini",
+  "version": "0.1.0",
+  "description": "External web SEARCH provider: hosts the web-search@1 service object (registry + selection + cap) and registers ONE engine, `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side web search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "web-search", "version": 1, "provider": "gemini" }],
+  "config": {
+    "type": "object",
+    "description": "The seam config (provider/fallback/count/maxCount/maxChars/spill/timeoutMs) plus the one engine this row hosts. With no row the service is absent and `web search` answers missing-service, exactly as before.",
+    "properties": {
+      "provider": { "type": "string", "description": "Default engine id (defaults to the only registered engine, `gemini`)." },
+      "fallback": { "type": "array", "description": "Ordered fallback chain consulted when the default engine cannot run." },
+      "apiKeyEnv": { "type": "string", "description": "Credential NAME of the Gemini API key (default GEMINI_API_KEY). A NAME only: the value is resolved at CALL time through ctx.credentials, never read from config, never logged." },
+      "model": { "type": "string", "description": "Gemini model id used for the grounded search (default gemini-2.5-flash, a real API-accepted id)." },
+      "apiBase": { "type": "string", "description": "API root (default https://generativelanguage.googleapis.com/v1beta); a proxy or a stub server may override it." },
+      "engineId": { "type": "string", "description": "Engine id registered with the seam (default gemini), the value a request names with `engine:`." },
+      "grounded": { "type": "boolean", "description": "Send the native google_search grounding tool (default true). false keeps the same route but answers without web grounding." },
+      "count": { "type": "integer", "description": "Default result count of a call that names none (default 5)." },
+      "maxCount": { "type": "integer", "description": "Hard ceiling of a caller-supplied count (default and max 20, the contract's ceiling)." },
+      "maxChars": { "type": "integer", "description": "Inline character cap of one answer (default 12000)." },
+      "spill": { "type": "boolean", "description": "Hand the overflow of the cap to spill@1 (default false: this row answers capped and reports dropped)." },
+      "timeoutMs": { "type": "integer", "description": "Per-call deadline of one Gemini request in ms (default 15000, max 120000)." }
+    }
+  }
+}
