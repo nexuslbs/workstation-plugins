@@ -1,7 +1,7 @@
 {
   "name": "browser-use-playwright",
   "version": "0.1.0",
-  "description": "The PLAYWRIGHT PROVIDER of the browser-use@1 seam (provider id `playwright`): it drives a real chromium through `playwright-core` - session lifecycle, navigate, the compact SNAPSHOT with SHORT STABLE refs, the full act vocabulary (click/type/fill/select/hover/scroll/press/upload/check/focus/waitFor/back/forward/reload), evaluate, readable extract (text/markdown/html/table/attributes/links/json), FILE screenshots, tabs, waits, downloads/network observation and storage-state reuse. It reuses the SHARED chromium launcher of this repository (`shared/browser.ts`) instead of forking a second browser stack, so `web-page`, `web-session` and this provider never launch competing browsers. It spawns a process, so it declares execution host; a deployment without a browser fails with the typed `browser-use.no-browser` error naming the exact prerequisite - never a silent fallback to a non-browser fetch.",
+  "description": "The PLAYWRIGHT PROVIDER of the browser-use@1 seam (provider id `playwright`): it drives a real chromium through `playwright-core` - session lifecycle, navigate, the compact SNAPSHOT with SHORT STABLE refs, the full act vocabulary (click/type/fill/select/hover/scroll/press/upload/check/focus/waitFor/back/forward/reload), evaluate, readable extract (text/markdown/html/table/attributes/links/json), FILE screenshots, tabs, waits, downloads/network observation and storage-state reuse. It is LOCATION-AGNOSTIC: the `backend` config row decides WHERE the browser runs (local | container | ssh | ssh+container | http), mirroring the himalaya impl plugin, and every non-local backend reaches the browser through the general-service@1 seam under the hood. It reuses the SHARED chromium launcher of this repository (`shared/browser.ts`) instead of forking a second browser stack, so `web-page`, `web-session` and this provider never launch competing browsers. A deployment without a browser fails with the typed `browser-use.no-browser` / `browser-use.endpoint-unreachable` error naming the exact prerequisite - never a silent fallback to a non-browser fetch.",
   "entry": "index.ts",
   "execution": "host",
   "capabilities": [{ "id": "browser-use", "version": 1, "provider": "playwright" }],
@@ -10,8 +10,13 @@
   },
   "config": {
     "type": "object",
-    "description": "The browser this provider drives (binary or the playwright cache, launch argv, headless), the defaults of a session (viewport, locale, timezone, user agent, proxy) and where its files live (storage state, screenshots, downloads).",
+    "description": "WHERE the browser runs is a CONFIG decision (`backend`: local | container | ssh | ssh+container | http), never a hardcoded endpoint/image/launch-mode: the plugin is location-agnostic like the himalaya impl plugin, and every non-local backend reaches the browser through the general-service@1 seam (probe/start). Backwards compatible: `backend` may be omitted and is then inferred (browserService -> container, a bare wsEndpoint/cdpEndpoint -> http, otherwise local), so the existing `browserService: { endpoint: http://browser:9222, image: ... }` config keeps working unchanged as the container-mode default.",
     "properties": {
+      "backend": {
+        "type": "string",
+        "enum": ["local", "container", "ssh", "ssh+container", "http"],
+        "description": "WHERE the browser runs. `local`: a chromium launched by this provider (`executablePath` or the playwright cache). `container`: a compose browser service of the stack (CDP attach to `browserService.endpoint`, probe/start through the seam). `ssh` / `ssh+container`: a browser on a REMOTE machine (probe/start through the seam). `http`: a remote CDP endpoint over http. Absent: inferred (browserService -> container, wsEndpoint/cdpEndpoint -> http, otherwise local)."
+      },
       "headless": { "type": "boolean", "default": true, "description": "Run the shared chromium without a window. It is a LAUNCH-time setting of the shared process, so a session cannot change it." },
       "viewport": {
         "type": "object",
@@ -31,7 +36,24 @@
         },
         "required": ["server"]
       },
-      "executablePath": { "type": "string", "description": "A chromium/chrome binary to launch. Absent: playwright resolves its own cache (`PLAYWRIGHT_BROWSERS_PATH`)." },
+      "executablePath": { "type": "string", "description": "A chromium/chrome binary to launch for the `local` backend. Absent: playwright resolves its own cache (`PLAYWRIGHT_BROWSERS_PATH`)." },
+      "wsEndpoint": { "type": "string", "description": "A REMOTE browser to ATTACH to instead of launching a local chromium: a CDP/websocket endpoint (`ws://browser:3000/`, `http://browser:9222`). When set, the provider connects over CDP and NEVER launches a local process; an endpoint that does not answer fails with the typed `browser-use.endpoint-unreachable` naming it - no silent local launch, no silent HTTP fetch. `cdpEndpoint` is accepted as an alias. A bare endpoint (no `browserService`) selects the `http` backend." },
+      "cdpEndpoint": { "type": "string", "description": "Alias of `wsEndpoint`, for a caller that thinks in CDP terms." },
+      "browserService": {
+        "type": "object",
+        "description": "The SEPARATE browser service (its own image) this provider ATTACHES to, e.g. the stack `browser` service. `endpoint` is where it answers (`http://browser:9222`); `image` is named in answers/errors; `generalService` is the general-service@1 instance (type + params: container / ssh / ssh+container / http) used to START/probe that service when the endpoint does not answer yet - the SEAM decides the transport, this provider never hard-wires docker or ssh. When `generalService` is absent it is built FROM the `backend` (type = backend, params = the backend's block).",
+        "properties": {
+          "endpoint": { "type": "string", "description": "Where the browser service answers: `http://host:port` or a `ws(s)://` CDP URL, e.g. `http://browser:9222`." },
+          "image": { "type": "string", "description": "The image the service runs (named in the answers/errors), e.g. `ghcr.io/nexuslbs/workstation-plugins/browser:0.0.3`." },
+          "generalService": { "type": "object", "description": "The general-service@1 instance (`type` + `params`) that probes/starts the service. Absent: built from the `backend`." },
+          "start": { "type": "string", "description": "The command run THROUGH the instance when the endpoint does not answer (start it)." },
+          "probe": { "type": "string", "description": "A command run through the instance as a liveness/diagnostic proof (reported when the start fails)." },
+          "startTimeoutMs": { "type": "number", "default": 20000, "description": "How long to wait for the endpoint after `start`." }
+        }
+      },
+      "ssh": { "type": "object", "description": "The `ssh` backend params (host, user, key name, binary): they become the general-service@1 instance params of type `ssh` when `browserService.generalService` does not name an instance itself." },
+      "container": { "type": "object", "description": "The `container` backend params (engine, compose project/service): they become the general-service@1 instance params of type `container` when `browserService.generalService` does not name an instance itself." },
+      "http": { "type": "object", "description": "The `http` backend params (the control endpoint of the remote browser): they become the general-service@1 instance params of type `http` when `browserService.generalService` does not name an instance itself." },
       "browserArgs": { "type": "array", "items": { "type": "string" }, "description": "Extra chromium argv, handed over verbatim (argv, never a shell string)." },
       "storageStateDir": { "type": "string", "description": "Where the per-session storage-state files live (default `<tmpdir>/workbench-browser-use/state`), the SAME convention `web-session` uses." },
       "screenshotDir": { "type": "string", "description": "Where a screenshot without an explicit path is written (default `<tmpdir>/workbench-browser-use`; a relative value is resolved against the CWD). This provider OWNS the file it writes, so this value WINS over the host bound `plugins.browser-use-impl.screenshotDir`, and the answered path is always ABSOLUTE." },
