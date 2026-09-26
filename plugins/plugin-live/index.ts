@@ -486,10 +486,30 @@ function managedRows(text: string): Array<{ row: OverlayRow; markerLine: number;
   return rows
 }
 
+/** The first line of the managed-rows header block (its presence means "already documented"). */
+const HEADER_START = '# --- plugin-live MANAGED ROWS'
+
+/** Drop every managed-rows header block (called when the last managed row goes away). */
+function stripManagedHeader(text: string): string {
+  const lines = text.split('\n')
+  const kept: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].startsWith(HEADER_START)) {
+      kept.push(lines[index])
+      continue
+    }
+    while (index + 1 < lines.length && !/^# -{20,}$/.test(lines[index + 1])) index += 1
+    index += 1 // skip the closing rule
+    if (kept.length > 0 && kept[kept.length - 1].trim().length === 0) kept.pop()
+    while (index + 1 < lines.length && lines[index + 1].trim().length === 0) index += 1
+  }
+  return kept.join('\n')
+}
+
 /** Append one managed row (marker + one-line JSON) to the overlay text. */
 function appendManagedRow(text: string, row: OverlayRow): string {
   const head = text.trimEnd()
-  const header = text.includes(MANAGED_MARKER) ? '' : `${MANAGED_HEADER}\n`
+  const header = text.includes(HEADER_START) ? '' : `${MANAGED_HEADER}\n`
   return `${head}\n\n${header}${MANAGED_MARKER}\n${managedEntryLine(row)}\n`
 }
 
@@ -499,7 +519,10 @@ function removeManagedRow(text: string, id: string): { text: string; removed: bo
   if (entry === undefined) return { text, removed: false }
   const lines = text.split('\n')
   lines.splice(entry.markerLine, entry.entryLine - entry.markerLine + 1)
-  return { text: lines.join('\n'), removed: true }
+  const next = lines.join('\n')
+  // The header block documents the managed section: when its last row goes away it
+  // goes away too, so the next placement writes it exactly once.
+  return { text: next.includes(MANAGED_MARKER) ? next : stripManagedHeader(next), removed: true }
 }
 
 /** Delete one operator BLOCK row (`- id: <id>` plus every more-indented line after it). */
