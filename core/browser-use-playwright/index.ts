@@ -941,7 +941,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
   private async resolveCredential(name: string): Promise<string | undefined> {
     if (this.credentials === undefined || typeof this.credentials.resolve !== 'function') return undefined
     try {
-      const answer = await this.credentials.resolve({ name })
+      const answer = await this.credentials.resolve(name)
       const value = (answer as { value?: unknown } | undefined)?.value
       return typeof value === 'string' && value.length > 0 ? value : undefined
     } catch {

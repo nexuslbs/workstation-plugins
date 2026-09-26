@@ -190,7 +190,7 @@ export function createEmailProvider(himalaya: HimalayaService, config: EmailHima
         details: { credential: row.credential },
       })
     }
-    const resolved = await credentials.resolve({ name: row.credential })
+    const resolved = await credentials.resolve(row.credential)
     if (resolved === undefined || resolved.value === undefined || resolved.value.length === 0) {
       throw new ServiceError('not-configured', `email-himalaya: credential '${row.credential}' is not resolvable`, {
         stage: 'email.credentials',

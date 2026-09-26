@@ -462,7 +462,7 @@ export async function apply(ctx: PluginContext, config: Config = {}): Promise<vo
           `credential '${reference}' cannot be resolved (the credentials capability is not available)`,
         )
       }
-      const resolution = await credentials.resolve(parseCredentialName(reference))
+      const resolution = await credentials.resolve(reference)
       const value = resolution?.value
       if (typeof value !== 'string' || value.trim().length === 0) {
         throw notConfiguredError(entry.label, `credential '${reference}' did not resolve to a value`)
