@@ -1,0 +1,19 @@
+{
+  "name": "gemini-web-search",
+  "version": "0.1.0",
+  "description": "Search provider for the harness web capability seam (ctx.web): registers the id `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side web search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "web-search-provider", "version": 1, "provider": "gemini" }],
+  "config": {
+    "type": "object",
+    "description": "The provider row: which credential NAME to resolve, which Gemini model to call, and which provider id to register with ctx.web.",
+    "properties": {
+      "apiKeyEnv": { "type": "string", "description": "Credential NAME of the Gemini API key (default GEMINI_API_KEY). A NAME only: the value is resolved at CALL time through ctx.credentials, never read from config, never logged." },
+      "model": { "type": "string", "description": "Gemini model id used for the grounded search (default gemini-2.5-flash, a real API-accepted id)." },
+      "apiBase": { "type": "string", "description": "API root (default https://generativelanguage.googleapis.com/v1beta); a proxy or a stub server may override it." },
+      "providerId": { "type": "string", "description": "Provider id registered with the seam (default gemini), the value web.searchProvider names in a role patch." },
+      "grounded": { "type": "boolean", "description": "Send the native google_search grounding tool (default true). false keeps the same route but answers without web grounding." },
+      "timeoutMs": { "type": "integer", "description": "Per-call deadline of one Gemini request in ms (default 30000, max 120000)." }
+    }
+  }
+}
