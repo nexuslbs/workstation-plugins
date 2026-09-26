@@ -1,0 +1,20 @@
+{
+  "name": "plugin-live",
+  "version": "0.1.0",
+  "description": "Live plugin control for the RUNNING workstation service: declares plugin rows in the HMR-watched HOME patch layer and waits until the harness Loader has mounted/disposed them - no container recreate, no service restart, no release path. Tools: 'plugin list', 'plugin add', 'plugin remove'",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "description": "Both fields have production-safe defaults; the plugin drives the harness' own patch/loader machinery.",
+    "properties": {
+      "patchFile": {
+        "type": "string",
+        "description": "Absolute path of the live patch layer the tools write (default: $DSH_HOME/cordis.patch.yml, the HOME patch the harness watches)."
+      },
+      "waitMs": {
+        "type": "integer",
+        "description": "Default wait budget of 'plugin add'/'plugin remove' until the Loader reflects the change (default 15000, capped at 60000)."
+      }
+    }
+  }
+}

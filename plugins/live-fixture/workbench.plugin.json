@@ -1,0 +1,15 @@
+{
+  "name": "live-fixture",
+  "version": "0.1.0",
+  "description": "The minimal native dsh plugin used as the SUBJECT of the live add/remove demonstration: one tool ('fixture ping'). Deliberately NOT part of the workstation boot roster - it is added to the running service by 'plugin add' and disposed again by 'plugin remove'",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "properties": {
+      "label": {
+        "type": "string",
+        "description": "Marker echoed back by 'fixture ping' (default 'live-fixture'), so a caller can tell which row answered."
+      }
+    }
+  }
+}
