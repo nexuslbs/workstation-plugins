@@ -1,0 +1,20 @@
+{
+  "name": "http-surface",
+  "version": "0.1.0",
+  "description": "workstation HTTP surface: serves GET /health, GET /api/tools and POST /api/tool/call for the omni remote tool plugin by dispatching through the harness ToolRuntime (ctx.tools.execute) - a native dsh plugin, no workbench API",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "description": "The surface only shapes the HTTP routes; the tools themselves belong to the plugins that register them.",
+    "properties": {
+      "port": {
+        "type": "integer",
+        "description": "Listen port (default: $WORKSTATION_PORT or 8080)."
+      },
+      "tool_path": {
+        "type": "string",
+        "description": "Tool-call route (default /api/tool/call)."
+      }
+    }
+  }
+}
