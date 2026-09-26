@@ -1,0 +1,24 @@
+{
+  "name": "data-write-fence",
+  "version": "0.1.0",
+  "description": "Exact write grant for a read-only dsh role: registers a MONOTONIC tool guard (ctx.tools.guard) that denies every mutating filesystem tool call (write, edit) whose resolved target is outside the configured allow roots. The harness sandbox already fences writes to the session workspace, but that workspace is one primary root, so it is wider than 'only <omni_dir>/data/research and <omni_dir>/data/report'. A guard has no allow result, so no escalation or later listener can turn the denial back into a permission. Reads are never touched. Also registers a read-only `write fence` tool that reports the enforced roots.",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "description": "No `allow` list means the plugin mounts nothing (the sandbox policy stays the only fence).",
+    "properties": {
+      "allow": {
+        "type": "array",
+        "description": "The ONLY directories a mutating tool may target (absolute; a relative entry resolves against process.cwd())."
+      },
+      "mutatingTools": {
+        "type": "array",
+        "description": "Tool names to fence (default: write, edit)."
+      },
+      "pathArgs": {
+        "type": "array",
+        "description": "Argument names that may carry the target path (default: file_path, path, target, target_path). A mutating call with no recognizable path argument is denied (fail-closed)."
+      }
+    }
+  }
+}
