@@ -1,15 +1,27 @@
 {
   "name": "plugin-live",
-  "version": "0.1.0",
-  "description": "Live plugin control for the RUNNING workstation service: declares plugin rows in the HMR-watched HOME patch layer and waits until the harness Loader has mounted/disposed them - no container recreate, no service restart, no release path. Tools: 'plugin list', 'plugin add', 'plugin remove'",
+  "version": "0.2.0",
+  "description": "Live plugin AND config-row control for the RUNNING workstation service: declares plugin rows in the HMR-watched HOME patch layer, and applies CLI --patch overlay (config file) rows live through the profile-context overlay list - no container recreate, no service restart, no release path. Tools: 'plugin list', 'plugin add', 'plugin remove', 'plugin config list', 'plugin config sync'",
   "entry": "index.ts",
   "config": {
     "type": "object",
-    "description": "Both fields have production-safe defaults; the plugin drives the harness' own patch/loader machinery.",
+    "description": "All fields have production-safe defaults; the plugin drives the harness' own patch/loader machinery.",
     "properties": {
       "patchFile": {
         "type": "string",
         "description": "Absolute path of the live patch layer the tools write (default: $DSH_HOME/cordis.patch.yml, the HOME patch the harness watches)."
+      },
+      "configFile": {
+        "type": "string",
+        "description": "Absolute path of the managed CLI --patch overlay (the workstation roster). Default: the first --patch file on the command line."
+      },
+      "backupDir": {
+        "type": "string",
+        "description": "Directory the overlay file is backed up into before every placement (default: /opt/omni/data/backups/config)."
+      },
+      "auditFile": {
+        "type": "string",
+        "description": "Timestamped reload/dispose audit trail (default: $DSH_HOME/plugin-live.log)."
       },
       "waitMs": {
         "type": "integer",
