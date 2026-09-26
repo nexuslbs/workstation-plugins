@@ -29,7 +29,7 @@
 // (dsh: MISSING_CREDENTIAL) with exit code != 0.
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
@@ -136,26 +136,65 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const maxOutputChars = Math.max(int(config.maxOutputChars) ?? 12000, 1000)
   const bin = join(harnessDir, 'apps', 'cli', 'lib', 'bin.js')
 
-  /** Create $DSH_HOME/profiles/<role> from the headless default profile, once. */
+  /**
+   * Create $DSH_HOME/profiles/<role> from the harness' `headless` default
+   * profile, once, IDEMPOTENTLY.
+   *
+   * The harness CLI refuses to initialise a profile directory that ALREADY
+   * exists ("dsh: profile directory <dir> already exists; choose an unused
+   * profile name"), and an interrupted boot can leave a role dir behind WITHOUT
+   * a manifest. Doing `mkdirSync(profileDir)` first therefore made a role
+   * PERMANENTLY undispatchable: the dir existed, the CLI refused, no manifest
+   * ever appeared, and every call answered
+   *   agent run: role '<role>' could not be provisioned (no profile at ...)
+   * (observed thread 3263 for a never-seen role). Here the CLI is run against a
+   * TEMP home and the finished profile is RENAMED into place, so a
+   * manifest-less leftover dir is replaced and the FIRST call of a new role
+   * succeeds. A role that still cannot be provisioned stays LOUD: the caller
+   * throws on the missing manifest.
+   */
   const ensureRole = async (role: string): Promise<{ provisioned: boolean; notes: string[] }> => {
     const notes: string[] = []
-    const profileDir = join(dshHome, 'profiles', role)
+    const profilesDir = join(dshHome, 'profiles')
+    const profileDir = join(profilesDir, role)
     const manifest = join(profileDir, 'package.json')
     let provisioned = false
-    if (!existsSync(manifest)) {
-      mkdirSync(profileDir, { recursive: true })
+    if (existsSync(manifest)) {
+      notes.push(`profile '${role}' already provisioned (${profileDir})`)
+    } else {
+      mkdirSync(profilesDir, { recursive: true })
+      const stagingHome = join(profilesDir, `.init-${role}-${process.pid}-${Date.now()}`)
+      rmSync(stagingHome, { recursive: true, force: true })
       const init = await run('node', [bin, role, '--from-default-profile', 'headless'], {
         cwd: harnessDir,
-        env: process.env,
+        // A TEMP home: the CLI then initialises a FRESH profile dir instead of
+        // refusing the one that is (about to be) in place.
+        env: { ...process.env, DSH_HOME: stagingHome },
         timeoutMs: 120000,
       })
-      provisioned = true
-      notes.push(`profile '${role}' created from the headless default profile (exit ${init.code})`)
+      const stagedProfile = join(stagingHome, 'profiles', role)
+      if (existsSync(join(stagedProfile, 'package.json'))) {
+        // The target is manifest-less by definition: it is not a usable profile.
+        rmSync(profileDir, { recursive: true, force: true })
+        renameSync(stagedProfile, profileDir)
+        provisioned = true
+        notes.push(`profile '${role}' created from the headless default profile (init exit ${init.code}, staged in ${stagingHome})`)
+      } else {
+        // LOUD: keep the CLI's own words, the caller throws on the manifest.
+        notes.push(
+          `profile '${role}' NOT created: \`${bin} ${role} --from-default-profile headless\` exited ${init.code} without writing a manifest: ${tail(init.stderr.length > 0 ? init.stderr : init.stdout, 400)}`,
+        )
+      }
+      rmSync(stagingHome, { recursive: true, force: true })
     }
     const patch = join(roleProfilesDir, role, 'cordis.patch.yml')
     if (existsSync(patch)) {
-      copyFileSync(patch, join(profileDir, 'cordis.patch.yml'))
-      notes.push(`role patch copied: ${patch} -> ${profileDir}/cordis.patch.yml`)
+      if (existsSync(manifest)) {
+        copyFileSync(patch, join(profileDir, 'cordis.patch.yml'))
+        notes.push(`role patch copied: ${patch} -> ${profileDir}/cordis.patch.yml`)
+      } else {
+        notes.push(`role patch NOT copied: no profile manifest at ${manifest}`)
+      }
     } else {
       notes.push(`WARNING: no role patch at ${patch}: the worker's bash will be refused by the default sandbox policy`)
     }
