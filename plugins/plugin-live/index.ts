@@ -47,9 +47,14 @@
  *    persistent mirror of that list:
  *
  *     plugin config add   - temp-file-first: build the new overlay text, validate
- *                           it, back the live file up into
- *                           /opt/omni/data/backups/config/, place it atomically,
- *                           sync the in-memory overlay list and re-compose
+ *                           it with the SAME YAML parser the harness runs at boot
+ *                           (`yaml.load`, must be a top-level array), normalize the
+ *                           managed rows to `- {json}` sequence items, back the live
+ *                           file up into /opt/omni/data/backups/config/, place it
+ *                           atomically, sync the in-memory overlay list and
+ *                           re-compose. Text that would not parse at boot is NEVER
+ *                           installed (production incident 2026-09-27 03:26Z: a bare
+ *                           managed mapping crash-looped the service on the next boot)
  *     plugin config remove- drop the row from the file (managed one-line JSON
  *                           entry or an operator block row) AND from the live
  *                           list; the Loader disposes the entry
@@ -76,6 +81,7 @@
  */
 
 import { appendFileSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -109,10 +115,17 @@ const MANAGED_MARKER = '# plugin-live:managed'
 const MANAGED_HEADER = [
   '# --- plugin-live MANAGED ROWS -------------------------------------------',
   '# Rows below are written, re-read and removed LIVE by the dsh plugin',
-  '# `plugin-live` (`plugin config add|remove|sync`). Each row is ONE line of',
-  '# JSON preceded by the marker comment: JSON is valid YAML entry-list dialect,',
-  '# and the one-line form is what lets plugin-live re-read and remove the row',
-  '# without a container restart. Do not hand-edit the marker lines.',
+  '# `plugin-live` (`plugin config add|remove|sync`). Each row is ONE YAML',
+  '# SEQUENCE ITEM of this top-level patch array: a marker comment followed by',
+  '# `- ` and one line of JSON, e.g.',
+  '#   - {"insert":[{"id":"my-row","name":"/abs/path/index.ts"}]}',
+  '# The leading `- ` is REQUIRED: a BARE JSON mapping after the block sequence',
+  '# is not a sequence item, and the harness boot parser (js-yaml) then rejects',
+  '# the WHOLE overlay with "end of the stream or a document separator is',
+  '# expected" (production incident 2026-09-27 03:26Z, container restart loop).',
+  '# The one-line form is what lets plugin-live re-read and remove the row',
+  '# without a container restart, and every placement is validated with that',
+  '# same boot parser before it is installed. Do not hand-edit the marker lines.',
   '# ------------------------------------------------------------------------',
 ].join('\n')
 
@@ -435,10 +448,20 @@ function unquote(value: string): string {
   return trimmed
 }
 
-/** One row as a single-line JSON patch entry (the managed form). */
-function managedEntryLine(row: OverlayRow): string {
+/**
+ * One row as a YAML SEQUENCE ITEM of the top-level patch array (the managed form:
+ * `- ` plus one line of JSON). The leading `- ` is required - a bare mapping after
+ * the block sequence is not a sequence item and the boot parser rejects the file.
+ */
+export function managedEntryLine(row: OverlayRow): string {
   const entry = row.config === undefined ? { id: row.id, name: row.name } : { id: row.id, name: row.name, config: row.config }
-  return JSON.stringify({ insert: [entry] })
+  return `- ${JSON.stringify({ insert: [entry] })}`
+}
+
+/** The JSON text of a managed entry line: BOTH the legacy bare form and the `- ` form parse. */
+function managedEntryJson(line: string): string {
+  const raw = line.trim()
+  return raw.startsWith('- ') ? raw.slice(2).trim() : raw
 }
 
 /** The rows of one parsed patch object. */
@@ -469,7 +492,7 @@ function managedRows(text: string): Array<{ row: OverlayRow; markerLine: number;
     }
     let parsed: unknown
     try {
-      parsed = JSON.parse(lines[cursor].trim())
+      parsed = JSON.parse(managedEntryJson(lines[cursor]))
     } catch (error) {
       throw new Error(
         `plugin-live: the managed entry on line ${String(cursor + 1)} is not the one-line JSON patch entry `
@@ -484,6 +507,74 @@ function managedRows(text: string): Array<{ row: OverlayRow; markerLine: number;
     index = cursor
   }
   return rows
+}
+
+/**
+ * Re-write every managed row in the canonical sequence-item form. Called on EVERY
+ * config placement: a legacy file written by the pre-2026-09-27 plugin (bare JSON
+ * mappings) is repaired by the same write instead of being left unparseable.
+ */
+export function normalizeManagedRows(text: string): string {
+  const lines = text.split('\n')
+  for (const entry of managedRows(text)) {
+    // Throws on a managed entry that is not one-line JSON, BEFORE anything is rewritten.
+    JSON.parse(managedEntryJson(lines[entry.entryLine]))
+    lines[entry.entryLine] = managedEntryLine(entry.row)
+  }
+  return lines.join('\n')
+}
+
+/** The YAML parser the harness runs at boot over this overlay (`yaml.load`). */
+let bootParser: { load(text: string): unknown } | undefined
+let bootParserError: string | undefined
+
+/** Resolve js-yaml through the HARNESS dependency tree (the plugin imports nothing from the harness). */
+function bootYaml(): { load(text: string): unknown } | undefined {
+  if (bootParser !== undefined || bootParserError !== undefined) return bootParser
+  const anchors = [
+    process.argv[1],
+    join(dirname(fileURLToPath(import.meta.url)), 'index.ts'),
+    '/harness/apps/cli/lib/bin.js',
+  ]
+  for (const anchor of anchors) {
+    if (typeof anchor !== 'string' || anchor.length === 0) continue
+    try {
+      const load = createRequire(anchor)('js-yaml') as { load?: (text: string) => unknown }
+      if (typeof load?.load === 'function') {
+        bootParser = { load: (text: string) => load.load?.(text) }
+        return bootParser
+      }
+    } catch {
+      /* try the next anchor */
+    }
+  }
+  bootParserError = 'js-yaml is not resolvable from the harness, the plugin or /harness'
+  return undefined
+}
+
+/**
+ * Validate overlay text with the SAME parser the harness runs at boot: js-yaml
+ * `load` plus the "must be a top-level YAML array" rule (packages/boot/app-boot
+ * parsePatchList). A placement that would break the NEXT boot is refused BEFORE the
+ * live production file is touched.
+ */
+export function validateBootParse(text: string): void {
+  const parser = bootYaml()
+  if (parser === undefined) {
+    throw new Error(
+      `plugin-live: cannot load the boot YAML parser (${String(bootParserError)}); `
+      + 'refusing to place an overlay that was not validated against the boot parser',
+    )
+  }
+  let parsed: unknown
+  try {
+    parsed = parser.load(text)
+  } catch (error) {
+    throw new Error(`plugin-live: the overlay text would not parse at boot (${String(error)}); refusing to place it`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('plugin-live: the overlay text is not a top-level YAML array; refusing to place it')
+  }
 }
 
 /** The first line of the managed-rows header block (its presence means "already documented"). */
@@ -644,8 +735,10 @@ function removeRowFromOverlayFile(
   const managed = removeManagedRow(text, id)
   const next = managed.removed ? managed : removeBlockRow(text, id)
   if (!next.removed) return { changed: false }
+  const validated = normalizeManagedRows(next.text)
+  validateBootParse(validated)
   const backupFile = backupOverlay(file, backupDir)
-  placeText(file, next.text)
+  placeText(file, validated)
   return { changed: true, ...(backupFile === undefined ? {} : { backupFile }), form: managed.removed ? 'managed' : 'block' }
 }
 
@@ -866,8 +959,10 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           throw new Error(`plugin-live: the live layer already declares '${id}'; remove it first`)
         }
         audit(`event=config-add-start id=${id} module=${module} layer=config file=${target}`)
-        const nextText = appendManagedRow(readText(target), row)
+        const nextText = normalizeManagedRows(appendManagedRow(readText(target), row))
         validateOverlayText(nextText, id)
+        validateBootParse(nextText)
+        audit(`event=config-add-validated id=${id} file=${target} boot_parse=ok managed_rows=${String(managedRows(nextText).length)}`)
         backupFile = backupOverlay(target, backupDirOf(config)) ?? null
         placeText(target, nextText)
         addOverlayRow(ctx, row)
