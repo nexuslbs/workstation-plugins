@@ -51,7 +51,7 @@
 // the real session directory the run created (discoverability, retention, search).
 
 import { spawn } from 'node:child_process'
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
@@ -276,6 +276,28 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       }
     } else {
       notes.push(`WARNING: no role patch at ${patch}: the worker's bash will be refused by the default sandbox policy`)
+    }
+
+    // A row a ROLE patch INSERTS by bare package NAME is resolved from the
+    // PROFILE directory, and a freshly initialised profile has no node_modules of
+    // its own, so such an entry never loads (VERIFIED 2026-09-27):
+    //   dsh: warning: 1 entry did not activate
+    //   tool-session-query (@deepseek-ai/dsh-tool-session-query): failed to import
+    //   Cannot find package '@deepseek-ai/dsh-tool-session-query' imported from
+    //   /var/lib/workstation/profiles/<role>/
+    // The harness resolves every one of those packages from its OWN
+    // <harnessDir>/node_modules, so the profile gets a SYMLINK to it: role-patch
+    // rows then resolve exactly like the bundle's own rows, and the profile keeps
+    // no second copy to drift from the image. Idempotent, never fatal.
+    const profileNodeModules = join(profileDir, 'node_modules')
+    const harnessNodeModules = join(harnessDir, 'node_modules')
+    if (existsSync(manifest) && !existsSync(profileNodeModules) && existsSync(harnessNodeModules)) {
+      try {
+        symlinkSync(harnessNodeModules, profileNodeModules, 'dir')
+        notes.push(`role patch module resolution: ${profileNodeModules} -> ${harnessNodeModules}`)
+      } catch (error) {
+        notes.push(`WARNING: could not link ${profileNodeModules} -> ${harnessNodeModules}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
     return { provisioned, notes }
   }

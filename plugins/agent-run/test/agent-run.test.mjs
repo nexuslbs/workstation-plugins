@@ -25,7 +25,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -80,6 +80,7 @@ function fixture() {
   const harnessDir = join(root, 'harness')
   mkdirSync(join(harnessDir, 'apps', 'cli', 'lib'), { recursive: true })
   writeFileSync(join(harnessDir, 'apps', 'cli', 'lib', 'bin.js'), FAKE_CLI)
+  mkdirSync(join(harnessDir, 'node_modules'), { recursive: true })
   const dshHome = join(root, 'dsh-home')
   const roleProfilesDir = join(root, 'role-profiles')
   const projectsDir = join(root, 'projects')
@@ -290,6 +291,29 @@ test('a role that genuinely cannot be provisioned stays LOUD', async () => {
       )
       assert.equal(existsSync(manifestOf(fix, 'ghost-role')), false, 'no fake manifest may appear')
     })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a provisioned profile resolves role-patch package rows (node_modules symlink to the harness)', async () => {
+  const fix = fixture()
+  try {
+    defineRole(fix, 'researcher')
+    const tool = toolFor(fix)
+    const first = await tool.execute({ role: 'researcher', objective: 'say ok' })
+    assert.equal(first.exitCode, 0)
+    const link = join(fix.dshHome, 'profiles', 'researcher', 'node_modules')
+    assert.ok(lstatSync(link).isSymbolicLink(), 'the profile must carry a node_modules symlink for role-patch rows')
+    assert.equal(readlinkSync(link), join(fix.harnessDir, 'node_modules'))
+    assert.ok(
+      first.provisioningNotes.some((note) => note.includes('role patch module resolution')),
+      `the link must be reported, notes: ${JSON.stringify(first.provisioningNotes)}`,
+    )
+    // IDEMPOTENT: a second dispatch keeps exactly one link and still succeeds
+    const second = await tool.execute({ role: 'researcher', objective: 'say ok again' })
+    assert.equal(second.exitCode, 0)
+    assert.equal(readlinkSync(link), join(fix.harnessDir, 'node_modules'))
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }

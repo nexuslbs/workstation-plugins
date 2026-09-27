@@ -104,3 +104,35 @@ plugin is rolled out with NO container restart:
 The row itself lives in `omni-root` `config/workstation.yml` (id `agent-run`); the raw evidence of
 the full chain (facade dispatch -> worker -> verified artifact) is committed in omni-root
 `workstation/evidence/gate3-orchestrator-hop.md`.
+
+## Session layout (per project, per role)
+
+dsh stores every session under `$DSH_HOME/sessions/--<normalized-cwd>--/session-<uuid>/`, and that
+DIRECTORY is the cwd of the run. Because this tool runs each worker in
+`<projectsDir>/<project>` (default `/var/lib/workstation/projects/<project>`), one project = one
+session bucket:
+
+```
+$DSH_HOME/projects/<project>/dsh-sessions.jsonl                       # dispatch record
+$DSH_HOME/sessions/--var-lib-workstation-projects-<project>--/session-<uuid>/session.v4.jsonl.zstd
+```
+
+The harness CLI's `--session-id` only RESUMES an existing session (an unknown id is refused), so it
+can never NAME a new one. The STRUCTURED id `<role>-<project>-<timestamp>-<suffix>` is therefore
+placed where it helps: it leads the first prompt (the LLM session title is derived from that prompt
+and the text is full-text searchable), it is returned in the answer, and it is written into the
+per-project `dsh-sessions.jsonl` dispatch record that maps it to the real `session-<uuid>` directory.
+
+A WORKER dispatch additionally requires the profile to resolve the packages a role patch inserts by
+NAME (`tool-session-query`, `session-query-sqlite`, ...). A role patch resolves from the PROFILE
+directory, which owns no modules, so provisioning links `<profileDir>/node_modules` to the harness'
+own `<harnessDir>/node_modules`. Without that link the row fails to activate:
+
+```
+dsh: warning: 1 entry did not activate
+tool-session-query (@deepseek-ai/dsh-tool-session-query): failed to import
+```
+
+Layout, retention and archive are documented in the user-repo wiki
+`Reference/Omniagent/Workstation-DSH-Sessions.md` and implemented by
+`services/workstation/dsh-sessions.mjs` (layout | retention | archive | restore).
