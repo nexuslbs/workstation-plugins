@@ -27,9 +27,31 @@
 // from the harness credential store ($DSH_HOME/.credentials.yaml) or the launch
 // environment. A missing key fails LOUDLY in the returned output
 // (dsh: MISSING_CREDENTIAL) with exit code != 0.
+//
+// PER-PROJECT SESSION ORGANIZATION (operator requirement, 2026-09-27).
+// dsh stores every session under $DSH_HOME/sessions/--<normalized-cwd>--/, i.e.
+// the PROJECT BUCKET is the cwd of the run (packages/session/README + the agent
+// note `2026-07-24-project-session-directories`). This tool therefore runs the
+// worker with its cwd set to a PER-PROJECT workspace
+// (`<projectsDir>/<project>`, default /var/lib/workstation/projects/<project>),
+// so dispatches group by project instead of piling every run into the single
+// `--harness--` bucket, and every worker of one project shares the session-search
+// authority of that workspace (dsh-tool-session-query authorizes cross-session
+// access only on EXACT cwd equality).
+//
+// The session id itself is dsh-generated (`session-<uuid>`): the harness CLI's
+// `--session-id` only RESUMES an existing session (an unknown id fails with
+// `session "<id>" does not exist; omit --session-id to start a new Session`,
+// apps/cli/tests/profiles/headless/tests/headless.expected.e2e.ts), it can never
+// NAME a new one. So this tool puts the STRUCTURED id
+// (`<role>-<project>-<timestamp>-<suffix>`) where it does help: as the first line
+// of the first prompt (the LLM session title is derived from that prompt and the
+// text is indexed by the FTS session-query backend), into the answer, and into a
+// per-project `dsh-sessions.jsonl` dispatch record that maps the structured id to
+// the real session directory the run created (discoverability, retention, search).
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
@@ -63,6 +85,14 @@ export interface Config {
   dshHome?: string
   /** Role definitions shipped in the user repo (default /opt/omni/workstation/profiles). */
   roleProfilesDir?: string
+  /**
+   * Root of the PROJECT workspaces (default $WORKSTATION_PROJECTS_DIR or
+   * /var/lib/workstation/projects). One subdirectory per project; the worker's
+   * cwd is `<projectsDir>/<project>` and that cwd IS the dsh session project
+   * bucket, so the layout (and the workspace-scoped session search) follow the
+   * project. Overridden by the `WORKSTATION_PROJECTS_DIR` env var.
+   */
+  projectsDir?: string
   /** Default role when a caller omits it (default: developer). */
   defaultRole?: string
   /** Wall clock bound of ONE worker run, seconds (default 1200, bounded 30..7200). */
@@ -99,6 +129,53 @@ function tail(text: string, limit: number): string {
   return `[...${text.length - limit} chars elided...]\n${text.slice(text.length - limit)}`
 }
 
+/** A project name is ONE path segment: lowercase, short, no traversal. */
+function sanitizeProject(raw: string | undefined): string {
+  const cleaned = (raw ?? 'default')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+  return cleaned.length === 0 ? 'default' : cleaned.slice(0, 48)
+}
+
+/** A compact UTC stamp for the structured session id (YYYYMMDD-HHMMSS). */
+function stamp(now: number): string {
+  return new Date(now).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-')
+}
+
+/** A short random suffix so two dispatches in the same second never collide. */
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 7)
+}
+
+/**
+ * The dsh session PROJECT BUCKET directory name for one cwd.
+ *
+ * The JSONL session backend stores sessions under `--<normalized-cwd>--` with the
+ * filesystem separators replaced by `-` (packages/session/session-persistence-jsonl
+ * README, "On-disk layout"). Replicating that normalization is how this tool
+ * reports the session directory a run created: the id inside the bucket is a
+ * dsh-generated `session-<uuid>` that no CLI flag can set, so the project bucket
+ * is the addressable, readable part of the layout.
+ */
+function projectBucket(cwd: string): string {
+  const normalized = cwd
+    .replace(/^[\\/]+/, '')
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^A-Za-z0-9._~-]/g, '-')
+  return `--${normalized}--`
+}
+
+/** The session directories currently present in one project bucket (best effort). */
+function listSessions(sessionsDir: string, bucket: string): Set<string> {
+  try {
+    return new Set(readdirSync(join(sessionsDir, bucket)))
+  } catch {
+    return new Set()
+  }
+}
+
 /** Run one command to completion, capturing both streams (never rejecting on a non-zero exit). */
 function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -131,6 +208,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const harnessDir = str(config.harnessDir) ?? str(process.env.WORKSTATION_DIR) ?? '/harness'
   const dshHome = str(config.dshHome) ?? str(process.env.DSH_HOME) ?? '/var/lib/workstation'
   const roleProfilesDir = str(config.roleProfilesDir) ?? '/opt/omni/workstation/profiles'
+  const projectsDir = str(config.projectsDir) ?? str(process.env.WORKSTATION_PROJECTS_DIR) ?? '/var/lib/workstation/projects'
+  const sessionsDir = join(dshHome, 'sessions')
   const defaultRole = str(config.defaultRole) ?? 'developer'
   const timeoutSecs = Math.min(Math.max(int(config.timeoutSecs) ?? 1200, 30), 7200)
   const maxOutputChars = Math.max(int(config.maxOutputChars) ?? 12000, 1000)
@@ -220,9 +299,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           type: 'string',
           description: 'absolute path of the project briefing the worker must read BEFORE working (e.g. /opt/omni/workstation/templates/<project>-<role>.md); pass the pointer, never the content',
         },
+        project: {
+          type: 'string',
+          description: 'the PROJECT the worker belongs to (e.g. omnidev, workstation, demo, research, my-project-x; default: default). The worker runs with its cwd INSIDE the project workspace, which is the dsh session project bucket: sessions group per project and every worker of one project shares that workspace session-search authority. The structured session id is <role>-<project>-<timestamp>-<suffix>.',
+        },
         workdir: {
           type: 'string',
-          description: 'working directory handed to the worker (default: a scratch dir under $DSH_HOME/work, so the worker starts neutral)',
+          description: 'ADVISORY working directory recorded in the answer (compatibility only). It is NOT used as the process cwd: the process cwd is always the project workspace <projectsDir>/<project>, which is what makes dsh group the session under the project instead of scattering it.',
         },
         timeoutSecs: {
           type: 'integer',
@@ -234,7 +317,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         if (objective === undefined) throw new Error("agent run: the 'objective' parameter must be a non-empty task statement")
         const role = str(params.role) ?? defaultRole
         const template = str(params.template)
-        const workdir = str(params.workdir) ?? join(dshHome, 'work', role)
+        const project = sanitizeProject(str(params.project))
+        const advisoryWorkdir = str(params.workdir)
         const bound = Math.min(Math.max(int(params.timeoutSecs) ?? timeoutSecs, 30), 7200)
 
         const provisioning = await ensureRole(role)
@@ -242,21 +326,69 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           throw new Error(`agent run: role '${role}' could not be provisioned (no profile at ${join(dshHome, 'profiles', role)})`)
         }
 
-        const briefing = template === undefined
+        // The PROJECT workspace is the worker's cwd => the dsh session project
+        // bucket. Created on demand (the first dispatch of a project makes it).
+        const workspace = join(projectsDir, project)
+        mkdirSync(workspace, { recursive: true })
+
+        const sessionId = `${role}-${project}-${stamp(Date.now())}-${randomSuffix()}`
+        const sessionHeader = `[dsh-session role=${role} project=${project} id=${sessionId}]`
+        const task = template === undefined
           ? objective
           : `Your briefing is the file ${template} - read it first with the fs tool and follow it. Objective: ${objective}`
-        mkdirSync(workdir, { recursive: true })
+        // The structured id leads the FIRST prompt: the LLM session title is derived
+        // from that prompt and the prompt text is indexed by the FTS session-query
+        // backend, so role+project+id are readable in the title AND searchable.
+        const briefing = `${sessionHeader}\n\n${task}`
 
+        const bucket = projectBucket(workspace)
+        const before = listSessions(sessionsDir, bucket)
         const started = Date.now()
-        const result = await run('node', [bin, role, briefing], { cwd: harnessDir, env: process.env, timeoutMs: bound * 1000 })
+        // DSH_HOME is handed to the worker EXPLICITLY: the harness home (role
+        // profiles, credentials, session store) must never depend on ambient
+        // environment, and the session store this tool diffs afterwards lives
+        // under exactly this home.
+        const result = await run('node', [bin, role, briefing], {
+          cwd: workspace,
+          env: { ...process.env, DSH_HOME: dshHome },
+          timeoutMs: bound * 1000,
+        })
         const durationSecs = Math.round((Date.now() - started) / 1000)
+        const created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
+
+        // The dispatch record maps the STRUCTURED id to the dsh session directory
+        // the run really created: dsh names the directory session-<uuid>, so this
+        // is the only place both identities meet (discoverability, retention,
+        // archive). Best effort: never fail a worker run over the index.
+        try {
+          appendFileSync(join(workspace, 'dsh-sessions.jsonl'), `${JSON.stringify({
+            sessionId,
+            role,
+            project,
+            workspace,
+            bucket,
+            startedAt: new Date(started).toISOString(),
+            durationSecs,
+            exitCode: result.code,
+            timedOut: result.timedOut,
+            sessions: created,
+          })}\n`, 'utf8')
+        } catch {
+          /* best effort */
+        }
 
         return {
           role,
+          project,
+          sessionId,
+          workspace,
+          sessionBucket: bucket,
+          sessionDir: created.length === 1 ? join(sessionsDir, bucket, created[0]) : null,
+          sessionDirs: created.map((id) => join(sessionsDir, bucket, id)),
           objective,
           ...(template === undefined ? {} : { template }),
-          workdir,
-          command: `node ${bin} ${role} "<briefing>" (cwd ${harnessDir})`,
+          ...(advisoryWorkdir === undefined ? {} : { requestedWorkdir: advisoryWorkdir }),
+          command: `node ${bin} ${role} "<briefing>" (cwd ${workspace} -> session bucket ${bucket})`,
           exitCode: result.code,
           timedOut: result.timedOut,
           durationSecs,

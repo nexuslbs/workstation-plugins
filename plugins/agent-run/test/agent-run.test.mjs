@@ -64,7 +64,13 @@ if (process.env.FAKE_WORKER_FAIL === '1') {
   console.error('dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"')
   process.exit(1)
 }
-console.log(JSON.stringify({ role, answer: 'ok' }))
+// Emulate the real session-persistence-jsonl layout: one session directory under
+// the PROJECT bucket of the process cwd (--<normalized-cwd>--/session-<uuid>/).
+const bucket = '--' + process.cwd().replace(/^[\\/]+/, '').replace(/[\\/]+/g, '-') + '--'
+const sessionDir = join(home, 'sessions', bucket, 'session-' + Math.random().toString(16).slice(2, 10))
+mkdirSync(sessionDir, { recursive: true })
+writeFileSync(join(sessionDir, 'session.v4.jsonl.zstd'), '')
+console.log(JSON.stringify({ role, answer: 'ok', cwd: process.cwd(), briefing: process.argv[3], bucket, sessionDir }))
 process.exit(0)
 `
 
@@ -76,9 +82,11 @@ function fixture() {
   writeFileSync(join(harnessDir, 'apps', 'cli', 'lib', 'bin.js'), FAKE_CLI)
   const dshHome = join(root, 'dsh-home')
   const roleProfilesDir = join(root, 'role-profiles')
+  const projectsDir = join(root, 'projects')
   mkdirSync(roleProfilesDir, { recursive: true })
+  mkdirSync(projectsDir, { recursive: true })
   const calls = join(root, 'calls.log')
-  return { root, harnessDir, dshHome, roleProfilesDir, calls }
+  return { root, harnessDir, dshHome, roleProfilesDir, projectsDir, calls }
 }
 
 /** Run a body with extra environment for the fake CLI, restoring it afterwards. */
@@ -117,6 +125,7 @@ function toolFor(fix) {
     harnessDir: fix.harnessDir,
     dshHome: fix.dshHome,
     roleProfilesDir: fix.roleProfilesDir,
+    projectsDir: fix.projectsDir,
     defaultRole: 'developer',
     timeoutSecs: 30,
   })
@@ -148,10 +157,39 @@ test('the plugin is the agent-run seam and registers the typed "agent run" tool'
     assert.equal(tool.name, 'agent run')
     assert.deepEqual(
       Object.keys(tool.parameters.properties).sort(),
-      ['objective', 'role', 'template', 'timeoutSecs', 'workdir'],
-      'the tool must publish the delegation parameters (role/objective/template/workdir/timeoutSecs)',
+      ['objective', 'project', 'role', 'template', 'timeoutSecs', 'workdir'],
+      'the tool must publish the delegation parameters (role/objective/template/project/workdir/timeoutSecs)',
     )
     assert.ok(tool.parameters.required.includes('objective'), 'objective is the only required parameter')
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a dispatch runs the worker in its PROJECT workspace and records the structured session id', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    const result = await tool.execute({ role: 'developer', project: 'game-x', objective: 'prove the project layout' })
+    assert.equal(result.exitCode, 0)
+
+    // 1. the worker's cwd is the PROJECT workspace (the dsh session bucket)
+    const workspace = join(fix.projectsDir, 'game-x')
+    assert.equal(result.workspace, workspace, 'the worker must run in the project workspace')
+    const payload = JSON.parse(result.stdoutTail.trim().split('\n').pop())
+    assert.equal(payload.cwd, workspace, 'the child process cwd must be the project workspace')
+    assert.match(result.sessionBucket, /-projects-game-x--$/, `bucket: ${result.sessionBucket}`)
+
+    // 2. the STRUCTURED id leads the first prompt (title + FTS source)
+    assert.match(result.sessionId, /^developer-game-x-\d{8}-\d{6}-[a-z0-9]{5}$/, `sessionId: ${result.sessionId}`)
+    assert.match(payload.briefing, /^\[dsh-session role=developer project=game-x id=developer-game-x-/)  
+
+    // 3. the real session directory the run created is reported and recorded
+    assert.equal(result.sessionDirs.length, 1, `sessionDirs: ${JSON.stringify(result.sessionDirs)}`)
+    assert.ok(result.sessionDirs[0].startsWith(join(fix.dshHome, 'sessions', result.sessionBucket)))
+    const record = JSON.parse(readFileSync(join(workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.equal(record.sessionId, result.sessionId)
+    assert.deepEqual(record.sessions, [payload.sessionDir.split('/').pop()])
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }
