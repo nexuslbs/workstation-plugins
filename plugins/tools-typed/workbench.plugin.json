@@ -1,0 +1,15 @@
+{
+  "name": "tools-typed",
+  "version": "0.1.0",
+  "description": "Typed facade tools for the workstation-tools concern: jq_query runs a jq program over inline JSON or a container file, python_run runs python3 -c with optional stdin/args/cwd, both through the general-service container transport",
+  "entry": "index.ts",
+  "capabilities": ["tool:jq_query", "tool:python_run"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "service": { "type": "string", "default": "workstation-tools", "description": "compose service the typed tools exec into" },
+      "projectDir": { "type": "string", "default": "/opt/omni", "description": "compose project directory" },
+      "timeoutMs": { "type": "number", "default": 60000, "description": "default per-call bound in ms (hard cap 600000)" }
+    }
+  }
+}

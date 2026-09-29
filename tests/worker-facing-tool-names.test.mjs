@@ -1,6 +1,6 @@
-// Cross-plugin regression test for the TOOL NAME contract of the four capability
-// CONSUMERS (research gap J / S6 / I1 / I2, 2026-09-29; dsh-convention rename,
-// 2026-09-29).
+// Cross-plugin regression test for the TOOL NAME contract of the capability
+// CONSUMERS plus the typed facade tools (research gap J / S6 / I1 / I2,
+// 2026-09-29; dsh-convention rename, 2026-09-29; tools-typed, 2026-09-29).
 //
 //   node --test tests/worker-facing-tool-names.test.mjs
 //
@@ -24,6 +24,7 @@ import { apply as applyEmail } from '../plugins/email-tools/index.ts'
 import { apply as applySms } from '../plugins/sms-tools/index.ts'
 import { apply as applyTotp } from '../plugins/totp-tools/index.ts'
 import { apply as applyWebSearch } from '../plugins/web-search-tools/index.ts'
+import { apply as applyToolsTyped } from '../plugins/tools-typed/index.ts'
 
 /** The model-facing name constraint enforced by the model provider. */
 const LEGAL = /^[a-zA-Z0-9_-]+$/
@@ -34,6 +35,7 @@ const TOOL_NAMES = {
   sms: ['sms_code', 'sms_get', 'sms_list', 'sms_numbers'],
   totp: ['totp_code', 'totp_list'],
   'web-search': ['web_search_grounded', 'web_search_providers'],
+  'tools-typed': ['jq_query', 'python_run'],
 }
 
 const APPLY = {
@@ -41,6 +43,7 @@ const APPLY = {
   sms: applySms,
   totp: applyTotp,
   'web-search': applyWebSearch,
+  'tools-typed': applyToolsTyped,
 }
 
 /**
