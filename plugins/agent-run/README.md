@@ -25,9 +25,28 @@ workstation__tool {"tool": "agent_run", "params": {
    `<projectsDir>/<project>` (the PROJECT workspace);
 3. returns `{role, project, sessionId, workspace, sessionBucket, sessionDir, sessionDirs,
    objective, template, command, exitCode, timedOut, durationSecs, provisioningNotes, stdoutTail,
-   stderrTail}` so the orchestrator verifies the ARTIFACT the briefing asked for instead of
-   trusting prose. `stdoutTail` keeps the END of the run, which is where the worker's final
-   answer is.
+   stderrTail, workspaceRegistration}` so the orchestrator verifies the ARTIFACT the briefing asked
+   for instead of trusting prose. `stdoutTail` keeps the END of the run, which is where the worker's
+   final answer is.
+
+## Workspace auto-registration (webserver grouping)
+
+The webserver groups sessions per project through the harness workspace registry
+(`ctx.workspaceRegistry`, hosted in the same process as this plugin). A session appears under a
+Workspace only when its id is in the workspace record AND its stored header cwd canonicalizes to
+the workspace path. So every dispatch:
+
+* **before** the run, idempotently `registry.create(<projectsDir>/<project>, title=<project>)`, so
+  the project's Workspace exists when the session lands;
+* **after** the run, attaches each created `session-<uuid>` directory name (the bucket diff yields
+  exactly the dsh session ids) with `workspace.attachSession(id)`. The worker is a SEPARATE CLI
+  process, so NO session-created event fires here: this attach in pid=1 is what makes the group
+  appear. `attachSession` re-validates the stored header cwd against the workspace path.
+
+Both halves share the helper `../workspace-register/registration.ts` with the
+`workspace_register` backfill tool (`plugins/workspace-register`). Registration is BEST EFFORT: if
+this composition does not expose the registry (or an attach is refused) the worker run still
+succeeds and the notes are reported in `workspaceRegistration.notes`.
 
 ## Session layout (per project)
 

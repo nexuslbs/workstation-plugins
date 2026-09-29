@@ -108,7 +108,7 @@ async function withEnv(env, body) {
 }
 
 /** Load the plugin against a fixture and return its registered `agent_run` tool. */
-function toolFor(fix) {
+function toolFor(fix, services = {}) {
   const registrations = []
   const ctx = {
     tools: {
@@ -121,6 +121,10 @@ function toolFor(fix) {
       callback()
     },
     logger: { info() {}, warn() {} },
+    get(name, strict) {
+      assert.equal(strict, false, 'the workspace services must be looked up NON-strictly')
+      return services[name]
+    },
   }
   apply(ctx, {
     harnessDir: fix.harnessDir,
@@ -191,6 +195,68 @@ test('a dispatch runs the worker in its PROJECT workspace and records the struct
     const record = JSON.parse(readFileSync(join(workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
     assert.equal(record.sessionId, result.sessionId)
     assert.deepEqual(record.sessions, [payload.sessionDir.split('/').pop()])
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a dispatch AUTO-REGISTERS the project workspace before the run and attaches the created session after it', async () => {
+  const fix = fixture()
+  try {
+    const ensured = []
+    const attached = []
+    const workspaceEntity = {
+      id: 'ws-1',
+      path: join(fix.projectsDir, 'game-x'),
+      title: 'game-x',
+      createdAt: '2026-09-29T00:00:00.000Z',
+      updatedAt: '2026-09-29T00:00:00.000Z',
+      sessionIds: [],
+      async attachSession(sessionId) {
+        attached.push(sessionId)
+        if (!this.sessionIds.includes(sessionId)) this.sessionIds.unshift(sessionId)
+      },
+    }
+    const registry = {
+      async create(path, title) {
+        ensured.push({ path, title })
+        return workspaceEntity
+      },
+      list() {
+        return [workspaceEntity]
+      },
+    }
+    const tool = toolFor(fix, { workspaceRegistry: registry })
+    const result = await tool.execute({ project: 'game-x', objective: 'register me' })
+
+    assert.equal(result.exitCode, 0)
+    // ensure BEFORE the run (exactly once; the post-run path reuses it)
+    assert.deepEqual(ensured, [{ path: workspaceEntity.path, title: 'game-x' }])
+    // attach AFTER the run, with the real session-<uuid> directory names (== ids)
+    assert.deepEqual(attached, result.sessionDirs.map((dir) => dir.split('/').pop()))
+    assert.equal(result.workspaceRegistration.workspaceId, 'ws-1')
+    assert.deepEqual(result.workspaceRegistration.attachedSessionIds, attached)
+    assert.ok(
+      result.workspaceRegistration.notes.some((note) => note.includes('attached 1 of 1')),
+      `registration notes: ${JSON.stringify(result.workspaceRegistration.notes)}`,
+    )
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a dispatch still runs when the workspace registry is NOT composed (best effort)', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix) // no services: get() returns undefined
+    const result = await tool.execute({ project: 'standalone', objective: 'no registry here' })
+    assert.equal(result.exitCode, 0, 'a missing registry must never fail a dispatch')
+    assert.equal(result.workspaceRegistration.workspaceId, null)
+    assert.deepEqual(result.workspaceRegistration.attachedSessionIds, [])
+    assert.ok(
+      result.workspaceRegistration.notes.some((note) => note.includes('not exposed')),
+      `registration notes: ${JSON.stringify(result.workspaceRegistration.notes)}`,
+    )
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }

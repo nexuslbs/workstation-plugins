@@ -55,6 +55,12 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renam
 import { join } from 'node:path'
 
 import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+import {
+  attachSessionIds,
+  ensureWorkspace,
+  type WorkspaceLike,
+  type WorkspaceRegistryLike,
+} from '../workspace-register/registration.ts'
 
 /** One declared tool parameter (the property map the core publishes). */
 interface ToolParameter {
@@ -74,6 +80,12 @@ interface PluginContext {
   tools: ToolsLike
   effect(callback: () => () => void): void
   logger?: { info?(...args: unknown[]): void; warn?(...args: unknown[]): void }
+  /**
+   * Cordis service lookup. Used NON-STRICTLY (`get(name, false)`) for the
+   * optional workspace-registration services: a process that does not compose
+   * the workspace registry must still be able to run a worker.
+   */
+  get?(name: string, strict?: boolean): unknown
 }
 
 export const name = 'agent-run'
@@ -216,6 +228,24 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const bin = join(harnessDir, 'apps', 'cli', 'lib', 'bin.js')
 
   /**
+   * OPTIONAL service lookup. The workspace registry lives in the webserver
+   * process (pid=1) together with this plugin, but the composition that loads
+   * this plugin does not HAVE to provide it (a bare delegation plane), so the
+   * lookup is non-strict and a missing service simply skips registration -
+   * never fails a worker dispatch.
+   */
+  const serviceOf = <T>(serviceName: string): T | undefined => {
+    const getter = ctx.get
+    if (typeof getter !== 'function') return undefined
+    try {
+      return (getter.call(ctx, serviceName, false) ?? undefined) as T | undefined
+    } catch {
+      return undefined
+    }
+  }
+  const workspaceRegistry = serviceOf<WorkspaceRegistryLike>('workspaceRegistry')
+
+  /**
    * Create $DSH_HOME/profiles/<role> from the harness' `headless` default
    * profile, once, IDEMPOTENTLY.
    *
@@ -353,6 +383,23 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         const workspace = join(projectsDir, project)
         mkdirSync(workspace, { recursive: true })
 
+        // AUTO-REGISTER (best effort): ensure the PROJECT's Workspace exists
+        // BEFORE the run, so the session this dispatch creates has a group to
+        // land in. `create()` is idempotent and the registry lives in THIS
+        // process (pid=1), which is the only process that can write it.
+        const registrationNotes: string[] = []
+        let projectWorkspace: WorkspaceLike | undefined
+        if (workspaceRegistry !== undefined) {
+          try {
+            projectWorkspace = await ensureWorkspace(workspaceRegistry, workspace, project)
+            registrationNotes.push(`workspace ensured before run: ${projectWorkspace.path} (id ${String(projectWorkspace.id)})`)
+          } catch (error) {
+            registrationNotes.push(`workspace NOT ensured before run: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        } else {
+          registrationNotes.push('workspace registry not exposed in this process; pre-run registration skipped')
+        }
+
         const sessionId = `${role}-${project}-${stamp(Date.now())}-${randomSuffix()}`
         const sessionHeader = `[dsh-session role=${role} project=${project} id=${sessionId}]`
         const task = template === undefined
@@ -377,6 +424,29 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         })
         const durationSecs = Math.round((Date.now() - started) / 1000)
         const created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
+
+        // AUTO-REGISTER (best effort): the worker is a SEPARATE CLI process, so
+        // NO session-created event fires in this process; the bucket diff is
+        // what yields the created `session-<uuid>` directory names, and those
+        // names ARE the dsh session ids. `attachSession()` re-validates the
+        // stored header cwd against the workspace path here in pid=1, which
+        // also indexes the new header for the registry's membership getter.
+        const attachedSessionIds: string[] = []
+        if (workspaceRegistry !== undefined && created.length > 0) {
+          try {
+            projectWorkspace ??= await ensureWorkspace(workspaceRegistry, workspace, project)
+            const outcome = await attachSessionIds(projectWorkspace, created)
+            attachedSessionIds.push(...outcome.attached)
+            registrationNotes.push(
+              `attached ${outcome.attached.length} of ${created.length} created session(s) to workspace ${String(projectWorkspace.id)}`,
+            )
+            for (const skip of outcome.skipped) {
+              registrationNotes.push(`session ${skip.sessionId} NOT attached: ${skip.reason}`)
+            }
+          } catch (error) {
+            registrationNotes.push(`session attach failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
 
         // The dispatch record maps the STRUCTURED id to the dsh session directory
         // the run really created: dsh names the directory session-<uuid>, so this
@@ -415,6 +485,12 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           timedOut: result.timedOut,
           durationSecs,
           provisioningNotes: provisioning.notes,
+          workspaceRegistration: {
+            workspaceId: projectWorkspace === undefined ? null : String(projectWorkspace.id),
+            workspacePath: workspace,
+            attachedSessionIds,
+            notes: registrationNotes,
+          },
           stdoutTail: tail(result.stdout, maxOutputChars),
           stderrTail: tail(result.stderr, maxOutputChars),
         }
