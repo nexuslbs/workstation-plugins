@@ -75,17 +75,32 @@ export const name = 'totp-tools'
 export interface Config {
   /** Reported with every code: whether to include the entry's issuer/account. */
   reportEntryMetadata?: boolean
+  /**
+   * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
+   * the legal-name tools (`totp_list`, `totp_code`) and NEVER the space-named
+   * facade tools: the model provider rejects model-facing tool names outside
+   * `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a WORKER profile must be
+   * composed with `workerFacing: true` while the FACADE keeps the space-named
+   * contract unchanged (default: false).
+   */
+  workerFacing?: boolean
 }
 
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const reportMetadata = config.reportEntryMetadata !== false
+  // Only the names of the SELECTED plane are registered: in worker-facing mode
+  // a space-named tool MUST NOT exist (the model provider rejects it), and in
+  // facade mode the space-named contract is unchanged.
+  const NAMES = config.workerFacing === true
+    ? { list: 'totp_list', code: 'totp_code' }
+    : { list: 'totp list', code: 'totp code' }
 
   // 1) The inventory: which entries exist (labels + metadata). A key value is
   // never part of this answer because it is never part of the capability's
   // `entries()` either - the contract is metadata only.
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'totp list',
+      name: NAMES.list,
       description:
         'lists the configured TOTP entries: label, issuer, account, digits, period, algorithm and whether a key is configured; never a secret',
       parameters: {},
@@ -103,7 +118,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // stays valid (`remainingSeconds`).
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'totp code',
+      name: NAMES.code,
       description:
         'generates the current code of the named TOTP entry (label, optional unix-second `at`) and reports digits, period, algorithm, generatedAt and remainingSeconds',
       parameters: {

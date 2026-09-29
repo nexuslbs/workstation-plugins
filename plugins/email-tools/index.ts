@@ -52,6 +52,16 @@ interface ToolsLike {
 export interface Config {
   /** Cap of one `email list` page (default 10, hard cap 50). */
   defaultLimit?: number
+  /**
+   * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
+   * the legal-name tools (`email_accounts`, `email_list`, `email_get`,
+   * `email_code`, `email_send`) and NEVER the space-named facade tools: the
+   * model provider rejects model-facing tool names outside
+   * `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a WORKER profile must be
+   * composed with `workerFacing: true` while the FACADE keeps the space-named
+   * contract unchanged (default: false).
+   */
+  workerFacing?: boolean
 }
 
 export interface EmailToolsContext extends ServiceContext {
@@ -390,12 +400,26 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
   }
 }
 
+/** The legal (model-facing) name of each facade tool, for `workerFacing` mode. */
+const WORKER_NAMES: Record<string, string> = {
+  'email accounts': 'email_accounts',
+  'email list': 'email_list',
+  'email get': 'email_get',
+  'email code': 'email_code',
+  'email send': 'email_send',
+}
+
 export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   const registered = tools(config, ctx)
+  // Only the names of the SELECTED plane are registered: in worker-facing mode
+  // a space-named tool MUST NOT exist (the model provider rejects it), and in
+  // facade mode the space-named contract is unchanged.
+  const expose = (toolName: string): string =>
+    config.workerFacing === true ? (WORKER_NAMES[toolName] ?? toolName) : toolName
   const install = (): (() => void) => {
     const disposers = Object.entries(registered).map(([toolName, tool]) =>
       ctx.tools.register(defineTool({
-        name: toolName,
+        name: expose(toolName),
         description: tool.description,
         parameters: tool.parameters,
         execute: tool.handler,

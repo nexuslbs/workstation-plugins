@@ -97,6 +97,15 @@ export interface Config {
   defaultListLimit?: number
   /** Report each message body in `sms list` (default true; `false` keeps previews only). */
   includeBodies?: boolean
+  /**
+   * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
+   * the legal-name tools (`sms_numbers`, `sms_list`, `sms_get`, `sms_code`) and
+   * NEVER the space-named facade tools: the model provider rejects model-facing
+   * tool names outside `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a
+   * WORKER profile must be composed with `workerFacing: true` while the FACADE
+   * keeps the space-named contract unchanged (default: false).
+   */
+  workerFacing?: boolean
 }
 
 /** The hard cap of the definition itself: a client can never ask for more. */
@@ -143,13 +152,19 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const defaultListLimit = clampLimit(config.defaultListLimit ?? 10)
   const maxListLimit = clampLimit(config.maxListLimit ?? 50)
   const includeBodies = config.includeBodies !== false
+  // Only the names of the SELECTED plane are registered: in worker-facing mode
+  // a space-named tool MUST NOT exist (the model provider rejects it), and in
+  // facade mode the space-named contract is unchanged.
+  const NAMES = config.workerFacing === true
+    ? { numbers: 'sms_numbers', list: 'sms_list', get: 'sms_get', code: 'sms_code' }
+    : { numbers: 'sms numbers', list: 'sms list', get: 'sms get', code: 'sms code' }
 
   // 1) Which numbers exist, which one a call without a reference uses, and
   // which of them are actually usable. The tool NEVER keeps a roster of its own:
   // it forwards the capability, so the operator's config decides.
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'sms numbers',
+      name: NAMES.numbers,
       description:
         'lists the configured SMS numbers by label (which one is the default, and whether each has usable credentials); never a secret',
       parameters: {
@@ -175,7 +190,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // 2) The last N inbound messages of one number (default number when omitted).
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'sms list',
+      name: NAMES.list,
       description:
         'lists the newest inbound SMS of a number: optional number label (default number when omitted), limit, since, from and unreadOnly',
       parameters: {
@@ -209,7 +224,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // 3) One message, full (bounded) body included.
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'sms get',
+      name: NAMES.get,
       description: 'reads one inbound SMS of a number by id: the full body plus its sender, recipient, date and delivery metadata',
       parameters: {
         id: { type: 'string', description: 'message id, as reported by "sms list"', required: true },
@@ -229,7 +244,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // this handler only picks the message and forwards the options.
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'sms code',
+      name: NAMES.code,
       description:
         'extracts a verification code from an SMS (a given message id, or the newest message matching query/pattern) and reports which message it came from',
       parameters: {
