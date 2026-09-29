@@ -5,7 +5,7 @@
 //   Provider           - a backend implementation (any `totp@1` provider plugin,
 //                        e.g. core/totp-rfc6238)
 //   Consumer           - THIS plugin: it exposes the capability as the tools
-//                        `totp list` and `totp code` and never learns which
+//                        `totp_list` and `totp_code` and never learns which
 //                        provider answers.
 //
 // It imports NOTHING from the core and NOTHING from a provider: the only seams
@@ -75,32 +75,17 @@ export const name = 'totp-tools'
 export interface Config {
   /** Reported with every code: whether to include the entry's issuer/account. */
   reportEntryMetadata?: boolean
-  /**
-   * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
-   * the legal-name tools (`totp_list`, `totp_code`) and NEVER the space-named
-   * facade tools: the model provider rejects model-facing tool names outside
-   * `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a WORKER profile must be
-   * composed with `workerFacing: true` while the FACADE keeps the space-named
-   * contract unchanged (default: false).
-   */
-  workerFacing?: boolean
 }
 
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const reportMetadata = config.reportEntryMetadata !== false
-  // Only the names of the SELECTED plane are registered: in worker-facing mode
-  // a space-named tool MUST NOT exist (the model provider rejects it), and in
-  // facade mode the space-named contract is unchanged.
-  const NAMES = config.workerFacing === true
-    ? { list: 'totp_list', code: 'totp_code' }
-    : { list: 'totp list', code: 'totp code' }
 
   // 1) The inventory: which entries exist (labels + metadata). A key value is
   // never part of this answer because it is never part of the capability's
   // `entries()` either - the contract is metadata only.
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: NAMES.list,
+      name: 'totp_list',
       description:
         'lists the configured TOTP entries: label, issuer, account, digits, period, algorithm and whether a key is configured; never a secret',
       parameters: {},
@@ -118,11 +103,11 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // stays valid (`remainingSeconds`).
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: NAMES.code,
+      name: 'totp_code',
       description:
         'generates the current code of the named TOTP entry (label, optional unix-second `at`) and reports digits, period, algorithm, generatedAt and remainingSeconds',
       parameters: {
-        label: { type: 'string', description: "entry label, as reported by 'totp list' (e.g. github)", required: true },
+        label: { type: 'string', description: "entry label, as reported by 'totp_list' (e.g. github)", required: true },
         at: {
           type: 'integer',
           description: 'unix SECONDS to generate for (default: now); useful for deterministic and boundary checks',
@@ -130,7 +115,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       },
       execute: async (params) => {
         const label = str(params.label)
-        if (label === undefined) throw new Error("totp code: the 'label' parameter must be a non-empty entry label")
+        if (label === undefined) throw new Error("totp_code: the 'label' parameter must be a non-empty entry label")
         const at = int(params.at)
         const result = await ctx.totp.code(label, at === undefined ? {} : { at })
         const entries = reportMetadata ? await ctx.totp.entries() : undefined

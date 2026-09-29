@@ -139,8 +139,8 @@ Config (the patch row's `config` block):
 
 ### Exact tool names and typed parameters
 
-Two tools, both gated (section 5). Names follow the existing `web search` /
-`web search providers` convention (lowercase, space-separated).
+Two tools, both gated (section 5). Names follow the existing snake_case
+`web_search_grounded` / `web_search_providers` convention.
 
 **Tool A — `jev evaluate`** (the workhorse)
 
@@ -153,7 +153,7 @@ Two tools, both gated (section 5). Names follow the existing `web search` /
 Declared `parameters` use the repo's author form (`{ type, description, required, enum }`)
 and are compiled to JSON Schema by `defineTool`; the harness validates before `execute`.
 
-**Tool B — `jev providers`** (introspection / health, mirrors `web search providers`)
+**Tool B — `jev providers`** (introspection / health, mirrors `web_search_providers`)
 
 No parameters. Reports the credential NAME, whether it resolved, the configured model and
 base URL, and the last observed failure reason. It exists to separate "Jev answered
@@ -223,7 +223,7 @@ No role loses anything; adding the row is additive.
    distributions; forcing it through a chat route would discard the typed schema, require a
    bespoke provider, and burden every agent with prompt-shaped question construction.
 2. **A new `web-search@1` engine.** REJECTED: wrong capability. Jev evaluates supplied state;
-   it does not retrieve sources, and `web search` promises ranked URLs — Jev answers none.
+   it does not retrieve sources, and `web_search_grounded` promises ranked URLs — Jev answers none.
 3. **A skill that shells out to `curl`.** REJECTED: needs the credential inside the skill body,
    bypasses the harness credential service, and gives no typed parameter validation or
    structured failure (`missing-service` vs `auth-failed` vs `rate-limited`) that a caller can branch on.
@@ -237,7 +237,7 @@ No role loses anything; adding the row is additive.
    capability; the plugin set is the extension point (`AGENTS.md`: "Plugins, not loop changes"),
    and adding it here keeps it config-swappable and live-addable via `plugin-live`.
 
-The tool seam also makes the capability removable live (`plugin remove jev-tools`), which a
+The tool seam also makes the capability removable live (`plugin_remove jev-tools`), which a
 provider-route or base-bundle change would not.
 
 ---
@@ -267,7 +267,7 @@ tool is visible to any agent until `JEV_API_KEY` exists.** Mechanism:
    that internally answers "not configured" is explicitly NOT done — that would make it visible.
 3. Disposal stays per-fiber: `ctx.effect` is called synchronously at the start of `apply` and
    returns a disposer that unregisters whatever the async gate registered (stored in a local
-   array). A `plugin remove` disposes both cleanly.
+   array). A `plugin_remove` disposes both cleanly.
 4. The gate logs exactly one line on load: either
    `jev-tools: gate open (JEV_API_KEY configured, source=file); registered [jev evaluate, jev providers]`
    or
@@ -277,7 +277,7 @@ tool is visible to any agent until `JEV_API_KEY` exists.** Mechanism:
    re-resolve at each operation"). The apply-time resolve is only the visibility gate; a
    rotated key reaches the next call with no reload.
 
-**Consequence for `plugin add`.** `plugin add` waits until either the row is mounted or new
+**Consequence for `plugin_add`.** `plugin_add` waits until either the row is mounted or new
 tools appear (`plugins/plugin-live/index.ts`, `execute`). With the key absent the row mounts,
 `tools_added` is `[]`, and it returns `mounted: true` — correct and expected. With the key
 present it returns `tools_added: ["jev evaluate","jev providers"]`. Either way no restart.
@@ -301,12 +301,12 @@ present it returns `tools_added: ["jev evaluate","jev providers"]`. Either way n
    `/var/lib/workstation/sources/workstation-plugins/plugins/jev-tools/index.ts` exists
    (entrypoint clone or `git -C ... pull`). No image rebuild.
 5. **Declare and mount the row live** through the facade, with the config block:
-   `POST /api/tool/call {"tool":"plugin add","params":{"id":"jev-tools","module":"/var/lib/workstation/sources/workstation-plugins/plugins/jev-tools/index.ts","layer":"config","config":{"apiKeyEnv":"JEV_API_KEY","apiBase":"https://api.typesafe.ai/v1","model":"jev-latest","timeoutMs":30000,"maxStateChars":200000}}}`
+   `POST /api/tool/call {"tool":"plugin_add","params":{"id":"jev-tools","module":"/var/lib/workstation/sources/workstation-plugins/plugins/jev-tools/index.ts","layer":"config","config":{"apiKeyEnv":"JEV_API_KEY","apiBase":"https://api.typesafe.ai/v1","model":"jev-latest","timeoutMs":30000,"maxStateChars":200000}}}`
    (`layer: "config"` persists it in `/opt/omni/config/workstation.yml` with a backup; use
    `layer: "live"` for a first trial that only touches the watched HOME patch.)
 6. **Verify the gate opened.** Expect `tools_added: ["jev evaluate","jev providers"]` in the
-   `plugin add` answer (no warning). If it is `[]`, the row mounted with the gate closed: read
-   the gate log line, confirm the credential NAME, then `plugin remove jev-tools` and repeat
+   `plugin_add` answer (no warning). If it is `[]`, the row mounted with the gate closed: read
+   the gate log line, confirm the credential NAME, then `plugin_remove jev-tools` and repeat
    step 5 (re-running `apply` re-evaluates the gate).
 7. **Smoke-test the tool itself** (state is non-secret): one `jev evaluate` call over a sample
    ticket/message with one `noul`, one `choice` and one `score` question; assert
@@ -318,7 +318,7 @@ present it returns `tools_added: ["jev evaluate","jev providers"]`. Either way n
 9. **Update the roster note / DECISION block** in `/opt/omni/config/workstation.yml` (source
    of truth) with the new row and the credential NAME, and note that section 2's API detail
    must be re-verified against `docs.typesafe.ai/api`.
-10. **Rollback:** `POST /api/tool/call {"tool":"plugin remove","params":{"id":"jev-tools"}}`
+10. **Rollback:** `POST /api/tool/call {"tool":"plugin_remove","params":{"id":"jev-tools"}}`
     (disposes the row from both layers); optionally unset `JEV_API_KEY`.
 
 ---

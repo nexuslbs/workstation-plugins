@@ -1,7 +1,7 @@
 {
   "name": "plugin-live",
   "version": "0.2.0",
-  "description": "Live plugin AND config-row control for the RUNNING workstation service: declares plugin rows in the HMR-watched HOME patch layer, and applies CLI --patch overlay (config file) rows live through the profile-context overlay list - no container recreate, no service restart, no release path. Tools: 'plugin list', 'plugin add', 'plugin remove', 'plugin config list', 'plugin config sync'",
+  "description": "Live plugin AND config-row control for the RUNNING workstation service: declares plugin rows in the HMR-watched HOME patch layer, and applies CLI --patch overlay (config file) rows live through the profile-context overlay list - no container recreate, no service restart, no release path. Tools: 'plugin_list', 'plugin_add', 'plugin_remove', 'plugin_config_list', 'plugin_config_sync'",
   "entry": "index.ts",
   "config": {
     "type": "object",
@@ -25,7 +25,7 @@
       },
       "waitMs": {
         "type": "integer",
-        "description": "Default wait budget of 'plugin add'/'plugin remove' until the Loader reflects the change (default 15000, capped at 60000)."
+        "description": "Default wait budget of 'plugin_add'/'plugin_remove' until the Loader reflects the change (default 15000, capped at 60000)."
       }
     }
   }

@@ -24,7 +24,7 @@
 //
 //   (a) THE ROW IS NOT IN THE ROSTER. `plugins/jev-tools` is not a row of
 //       config/workstation.yml yet, so the service never loads it. Activation is
-//       ONE live call: `POST /api/tool/call {"tool":"plugin add","params":{
+//       ONE live call: `POST /api/tool/call {"tool":"plugin_add","params":{
 //       "id":"jev-tools","layer":"config", ...}}` (no container restart).
 //   (b) THE PLUGIN REGISTERS NOTHING WITHOUT ITS CREDENTIAL. `apply` resolves the
 //       credential NAME (default `JEV_API_KEY`) through the harness credentials
@@ -151,7 +151,7 @@ function missingCredential(credential: string, gate: string): Record<string, unk
     {
       credential,
       gate,
-      fix: `define the '${credential}' credential NAME in $DSH_HOME/.credentials.yaml (value never in this repo), then mount the row: plugin add --layer config`,
+      fix: `define the '${credential}' credential NAME in $DSH_HOME/.credentials.yaml (value never in this repo), then mount the row: plugin_add --layer config`,
     },
   )
 }

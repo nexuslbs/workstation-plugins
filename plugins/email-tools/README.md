@@ -10,10 +10,10 @@ keeps the provider swappable by config alone.
 
 | Tool | Parameters (type) | Result |
 | --- | --- | --- |
-| `email accounts` | `format?` (`string`, enum `labels`\|`full`, default `labels`) | `{ count, default, accounts }` - labels only, or the full account objects (address, default flag, backend description). Never a secret. |
-| `email list` | `account?` (`string`), `folder?` (`string`), `limit?` (`integer`, default 10, capped at 50 by `maxListLimit`), `unreadOnly?` (`boolean`), `since?` (`string`, ISO-8601) | `{ account, count, messages: [{ id, subject, from, to, date, unread, snippet?, folder? }] }` |
-| `email get` | `id` (`string`, **required**), `account?` (`string`), `format?` (`string`, enum `text`\|`markdown`\|`raw`, default `text`) | `{ account, id, subject, from, to, date, unread, format, body, attachments: [{ filename, contentType?, size? }] }` |
-| `email code` | `account?` (`string`), `id?` (`string`), `query?` (`string`), `pattern?` (`string`), `maxAgeSeconds?` (`integer`) | `{ account, code, subject, from, date, messageId }` - the extracted verification code plus the mail it came from |
+| `email_accounts` | `format?` (`string`, enum `labels`\|`full`, default `labels`) | `{ count, default, accounts }` - labels only, or the full account objects (address, default flag, backend description). Never a secret. |
+| `email_list` | `account?` (`string`), `folder?` (`string`), `limit?` (`integer`, default 10, capped at 50 by `maxListLimit`), `unreadOnly?` (`boolean`), `since?` (`string`, ISO-8601) | `{ account, count, messages: [{ id, subject, from, to, date, unread, snippet?, folder? }] }` |
+| `email_get` | `id` (`string`, **required**), `account?` (`string`), `format?` (`string`, enum `text`\|`markdown`\|`raw`, default `text`) | `{ account, id, subject, from, to, date, unread, format, body, attachments: [{ filename, contentType?, size? }] }` |
+| `email_code` | `account?` (`string`), `id?` (`string`), `query?` (`string`), `pattern?` (`string`), `maxAgeSeconds?` (`integer`) | `{ account, code, subject, from, date, messageId }` - the extracted verification code plus the mail it came from |
 
 Parameter semantics, exactly as the definition specifies them:
 
@@ -22,9 +22,9 @@ Parameter semantics, exactly as the definition specifies them:
   This plugin never holds a default of its own: it passes the reference through
   and lets the provider decide, so "multi-account + a configured default" stays
   a provider/config concern.
-- `format` in `email get` selects the body field returned (`raw` returns the raw
+- `format` in `email_get` selects the body field returned (`raw` returns the raw
   RFC822 message, bounded by the provider).
-- `email code` without `id` scans the newest messages (the definition's
+- `email_code` without `id` scans the newest messages (the definition's
   `DEFAULT_CODE_SCAN_LIMIT`) and extracts the first OTP-shaped token;
   `query` narrows to subject/from/snippet matches, `maxAgeSeconds` drops stale
   mail and an explicit `pattern` overrides the default rule (group 1 is the code).
@@ -36,18 +36,18 @@ Parameter semantics, exactly as the definition specifies them:
 The tools are reachable over the shipped tools seam - no new transport:
 
 ```console
-$ curl -s -X POST http://127.0.0.1:8080/api/tools/email%20list \
+$ curl -s -X POST http://127.0.0.1:8080/api/tools/email_list \
     -H 'content-type: application/json' -d '{"account":"work","limit":3}'
-{"status":"ok","tool":"email list","result":{"account":"work","count":3,"messages":[...]}}
+{"status":"ok","tool":"email_list","result":{"account":"work","count":3,"messages":[...]}}
 
 $ curl -s -X POST http://127.0.0.1:8080/api/tool/call \
-    -H 'content-type: application/json' -d '{"tool":"email code","params":{"account":"personal","maxAgeSeconds":900}}'
-{"status":"ok","tool":"email code","result":{"account":"personal","code":"123456","subject":"Your sign-in code",...}}
+    -H 'content-type: application/json' -d '{"tool":"email_code","params":{"account":"personal","maxAgeSeconds":900}}'
+{"status":"ok","tool":"email_code","result":{"account":"personal","code":"123456","subject":"Your sign-in code",...}}
 ```
 
 Failures are the seam's structured errors, never a crash: `400` with
 `{ error: { kind: "invalid-params", violations: [...] } }` when a body does not
-satisfy the schema (e.g. `email get` without `id`, or `format: "pdf"`), `404`
+satisfy the schema (e.g. `email_get` without `id`, or `format: "pdf"`), `404`
 `unknown-tool` when the plugin is not loaded, and a `500` whose body is
 `{ status: "error", error: { kind: "tool-failed", message: "email: ..." } }` when
 the capability itself refuses (not configured, unknown account, no code found);

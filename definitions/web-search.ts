@@ -3,12 +3,12 @@
 //
 // WHY THIS MODULE EXISTS: workbench could fetch a KNOWN url and render it, but
 // had no way to ANSWER "search the web for X" - a real gap of the thread-2535
-// list (item 7: "web search provider"). This module is the CONTRACT of that
+// list (item 7: "web-search provider"). This module is the CONTRACT of that
 // capability: one SEARCH operation with a normalized result list, a provider
 // registry with SWAPPABLE engines and a typed error vocabulary.
 //
 //        Engine plugins  ->  Definition  <-  Consumer
-//   core/web-search-stub              plugins/web-search-tools (`web search`)
+//   core/web-search-stub              plugins/web-search-tools (`web_search_grounded`)
 //   core/web-search-tavily            any other caller of `ctx['web-search']`
 //            \        /
 //        core/web-search-impl  (the SERVICE HOST: registry + selection + cap + spill)
@@ -225,7 +225,7 @@ export interface WebSearchProvider {
   filters?: readonly SearchFilter[]
   /**
    * A CHEAP, LOCAL availability check (is the credential present? is the base
-   * url set?): never a network call, so `web search providers` stays fast and
+   * url set?): never a network call, so `web_search_providers` stays fast and
    * cannot hang on an unreachable engine.
    */
   available(): boolean | Promise<boolean>
@@ -253,7 +253,7 @@ export interface WebSearchResult {
   engine: string
 }
 
-/** What an engine looks like in the `web search providers` introspection. */
+/** What an engine looks like in the `web_search_providers` introspection. */
 export interface WebSearchProviderInfo {
   id: string
   engine: string

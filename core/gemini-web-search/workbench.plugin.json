@@ -1,7 +1,7 @@
 {
   "name": "gemini-web-search",
   "version": "0.1.0",
-  "description": "Search provider for the harness web capability seam (ctx.web): registers the id `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side web search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
+  "description": "Search provider for the harness web capability seam (ctx.web): registers the id `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side grounded search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
   "entry": "index.ts",
   "capabilities": [{ "id": "web-search-provider", "version": 1, "provider": "gemini" }],
   "config": {

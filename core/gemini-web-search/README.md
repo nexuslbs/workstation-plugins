@@ -90,6 +90,6 @@ transport, HTTP or unparseable-response failure is `WEB_PROVIDER_ERROR`.
 ## Live application
 
 The row is a config row, so it takes effect without a container recreate: the
-module only has to be reachable at the `name:` path. `plugin add --layer config`
+module only has to be reachable at the `name:` path. `plugin_add --layer config`
 (a config patch) or an edited role profile patch, followed by a fresh dispatch,
 is enough.

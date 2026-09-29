@@ -18,7 +18,7 @@
  *   disposer, so a plugin wraps every call in `ctx.effect(...)` and unloads
  *   cleanly.
  *
- * Everything a consumer registers is disposable: unloading a plugin removes its
+ * Everything a consumer registers is disposable: unloading a plugin disposes its
  * routes, assets and pages (proved by `test/web.test.ts`).
  *
  * `npm run check:seam` enforces the direction on the module graph: only a
@@ -53,7 +53,7 @@ export interface WebRequest {
   /**
    * Path parameters a DYNAMIC route captured (a `:name` segment), decoded by the
    * provider; absent on an exact route. E.g. the route `POST /api/tools/:name`
-   * answers a request to `/api/tools/hello%20greet` with `{ name: 'hello greet' }`.
+   * answers a request to `/api/tools/hello_greet` with `{ name: 'hello_greet' }`.
    */
   params?: Record<string, string>
   /** Parsed query string. */

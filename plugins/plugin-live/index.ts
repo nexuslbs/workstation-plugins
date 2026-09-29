@@ -34,7 +34,7 @@
  * What this plugin does - two live layers, no shim:
  *
  * 1. LIVE PLUGIN LAYER = `$DSH_HOME/cordis.patch.yml` (the watched HOME patch,
- *    which nothing else writes). `plugin add` / `plugin remove` declare or drop
+ *    which nothing else writes). `plugin_add` / `plugin_remove` declare or drop
  *    a row there and wait until the running Loader tree has mounted / DISPOSED
  *    it. The write is atomic (temp + rename, exactly one watcher event) and each
  *    generation carries a comment header so the file text changes even when the
@@ -58,14 +58,14 @@
  *     plugin config remove- drop the row from the file (managed one-line JSON
  *                           entry or an operator block row) AND from the live
  *                           list; the Loader disposes the entry
- *     plugin config sync  - re-read the file and reconcile rows that this plugin
+ *     plugin_config_sync  - re-read the file and reconcile rows that this plugin
  *                           can fully parse (managed one-line JSON entries, and
  *                           block rows without a config block) into the live
  *                           list, so a RAW file edit is applied live too
- *     plugin config list  - the file, its declared rows, the live list and the
+ *     plugin_config_list  - the file, its declared rows, the live list and the
  *                           Loader state per row (drift included)
  *
- * `plugin remove` handles BOTH layers: a row declared in the config file is
+ * `plugin_remove` handles BOTH layers: a row declared in the config file is
  * removed from the file (with a backup) and from the live list, so a
  * config-declared row is addable AND removable live, as required.
  *
@@ -873,9 +873,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     + `config_file=${overlayFileOf(ctx, config) ?? 'none'} node=${process.version}`,
   )
 
-  // ── plugin list ──────────────────────────────────────────────────────────
+  // ── plugin_list ──────────────────────────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'plugin list',
+    name: 'plugin_list',
     description:
       'lists the plugins declared in the LIVE layer of the running workstation service, the raw Loader rows behind them and the tools the registry holds',
     parameters: {
@@ -914,9 +914,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     output: { schema: {}, render: renderValue },
   })))
 
-  // ── plugin add ───────────────────────────────────────────────────────────
+  // ── plugin_add ───────────────────────────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'plugin add',
+    name: 'plugin_add',
     description:
       'adds a dsh plugin to the RUNNING workstation service, either in the live patch layer (layer="live", or layer="config" to also declare the row in the managed CLI --patch overlay file); waits until the running tree has it mounted; the module source must be reachable by the service',
     parameters: {
@@ -1022,9 +1022,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     output: { schema: {}, render: renderValue },
   })))
 
-  // ── plugin remove ────────────────────────────────────────────────────────
+  // ── plugin_remove ────────────────────────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'plugin remove',
+    name: 'plugin_remove',
     description:
       'removes a dsh plugin from the RUNNING workstation service: drops its row from the live patch layer AND from the managed CLI --patch overlay file (backed up), then waits until the harness Loader has DISPOSED the entry (its tools and effects)',
     parameters: {
@@ -1103,9 +1103,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     output: { schema: {}, render: renderValue },
   })))
 
-  // ── plugin config list ───────────────────────────────────────────────────
+  // ── plugin_config_list ───────────────────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'plugin config list',
+    name: 'plugin_config_list',
     description:
       'lists the rows of the managed CLI --patch overlay (the workstation roster), the LIVE overlay layer the running service applies, and the Loader state of every row',
     parameters: {},
@@ -1154,9 +1154,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     output: { schema: {}, render: renderValue },
   })))
 
-  // ── plugin config sync ───────────────────────────────────────────────────
+  // ── plugin_config_sync ───────────────────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'plugin config sync',
+    name: 'plugin_config_sync',
     description:
       're-reads the managed CLI --patch overlay file and applies its rows to the RUNNING service (rows this plugin can fully parse: managed one-line JSON entries and block rows without a config block), then re-composes the live tree',
     parameters: {
@@ -1177,7 +1177,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         const current = before.find((candidate) => candidate.id === row.id)
         if (current === undefined) {
           if (row.hasConfigBlock) {
-            skipped.push({ id: row.id, reason: 'the overlay row carries a config block this plugin does not parse; use plugin add --layer config' })
+            skipped.push({ id: row.id, reason: 'the overlay row carries a config block this plugin does not parse; use plugin_add --layer config' })
             continue
           }
           addOverlayRow(ctx, { id: row.id, name: row.name, ...(row.config === undefined ? {} : { config: row.config }) })

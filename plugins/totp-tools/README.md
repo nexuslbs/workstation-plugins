@@ -7,7 +7,7 @@ External plugin for the workbench `totp@1` capability seam (core
 | --- | --- | --- |
 | Definition | core `src/totp/definition.ts` (`ctx.totp`) | the contract: `entries()`, `code(label, { at })` |
 | Provider | `core/totp-rfc6238` | RFC 4226/6238 TOTP over `node:crypto` HMAC |
-| **Consumer** | **this plugin** | the tools `totp list` / `totp code` |
+| **Consumer** | **this plugin** | the tools `totp_list` / `totp_code` |
 
 It imports nothing from the core and nothing from a provider. The only seams it
 touches are `ctx.totp` (injected by name) and `ctx.tools.registerTool`, so
@@ -18,7 +18,7 @@ swapping the provider is a config edit and this file never changes.
 Registered through the core's by-name tool surface (`POST /api/tools/<name>`,
 alias `POST /api/tool/call {"tool","params"}`):
 
-### `totp list`
+### `totp_list`
 
 No parameters. Answers the configured entries as **metadata only**:
 
@@ -35,11 +35,11 @@ No parameters. Answers the configured entries as **metadata only**:
 `configured: false` means the entry exists but has no usable key (no key
 declared, or its credential did not resolve); calling it reports exactly that.
 
-### `totp code`
+### `totp_code`
 
 | Parameter | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `label` | string | **yes** | entry label, as reported by `totp list` |
+| `label` | string | **yes** | entry label, as reported by `totp_list` |
 | `at` | integer | no | unix **seconds** to generate for (default: now) |
 
 ```json
@@ -73,7 +73,7 @@ plugins:
 ```
 
 `reportEntryMetadata: false` drops the `issuer`/`account` fields from a
-`totp code` answer (they stay in `totp list`).
+`totp_code` answer (they stay in `totp_list`).
 
 ## Wiring the capability
 
@@ -99,5 +99,5 @@ npm test      # from the workbench-plugins root
 
 `test/totp-tools.test.ts` boots this plugin against a FAKE `ctx.totp` and checks
 the registered tool names and schemas, the required `label`, the forwarding of
-`at`, that `totp list` exposes metadata only, and that swapping the provider
+`at`, that `totp_list` exposes metadata only, and that swapping the provider
 behind `ctx.totp` leaves every tool byte-identical.

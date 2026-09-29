@@ -17,10 +17,10 @@ is always the **LABEL** the operator configured, forwarded verbatim.
 
 | Tool | Parameters | What it does |
 | --- | --- | --- |
-| `sms numbers` | `format?` (`labels` default, `full`) | the configured number **labels**, which one is the default, and (with `full`) each label's `number`, `configured` and `description` - never a secret |
-| `sms list` | `number?`, `limit?` (default 10, max 50), `since?`, `from?`, `unreadOnly?` | the newest inbound messages of a number; a missing/blank `number` means the provider's configured default |
-| `sms get` | `id` (**required**), `number?` | one message by id: full (bounded) body plus sender, recipient, date and delivery metadata |
-| `sms code` | `number?`, `id?`, `query?`, `pattern?`, `occurrences?`, `maxAgeSeconds?` | extracts a **verification code** from a message (the given `id`, or the newest message matching `query`) and says which message it came from |
+| `sms_numbers` | `format?` (`labels` default, `full`) | the configured number **labels**, which one is the default, and (with `full`) each label's `number`, `configured` and `description` - never a secret |
+| `sms_list` | `number?`, `limit?` (default 10, max 50), `since?`, `from?`, `unreadOnly?` | the newest inbound messages of a number; a missing/blank `number` means the provider's configured default |
+| `sms_get` | `id` (**required**), `number?` | one message by id: full (bounded) body plus sender, recipient, date and delivery metadata |
+| `sms_code` | `number?`, `id?`, `query?`, `pattern?`, `occurrences?`, `maxAgeSeconds?` | extracts a **verification code** from a message (the given `id`, or the newest message matching `query`) and says which message it came from |
 
 Every parameter is declared in the tool's JSON schema, so the core validates it
 over `POST /api/tools/<name>` (alias `POST /api/tool/call {"tool","params"}`)
@@ -36,9 +36,9 @@ overrides, `occurrences` picks the candidate. This plugin only picks the message
 ```yaml
 plugins:
   sms-tools:
-    defaultListLimit: 10   # default 'limit' of 'sms list'
+    defaultListLimit: 10   # default 'limit' of 'sms_list'
     maxListLimit: 50       # cap accepted from a client (never above the contract's 100)
-    includeBodies: true    # false: 'sms list' reports metadata without bodies
+    includeBodies: true    # false: 'sms_list' reports metadata without bodies
 ```
 
 The numbers themselves are the **provider's** configuration (see
@@ -47,10 +47,10 @@ The numbers themselves are the **provider's** configuration (see
 ## Example calls
 
 ```sh
-curl -s -X POST http://127.0.0.1:8080/api/tools/'sms%20numbers' -H 'content-type: application/json' -d '{}'
-curl -s -X POST http://127.0.0.1:8080/api/tools/'sms%20list'    -H 'content-type: application/json' -d '{"number":"personal","limit":5}'
-curl -s -X POST http://127.0.0.1:8080/api/tools/'sms%20get'     -H 'content-type: application/json' -d '{"id":"SMxxxxxxxx"}'
-curl -s -X POST http://127.0.0.1:8080/api/tools/'sms%20code'    -H 'content-type: application/json' -d '{"number":"personal","query":"Verify"}'
+curl -s -X POST http://127.0.0.1:8080/api/tools/'sms_numbers' -H 'content-type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8080/api/tools/'sms_list'    -H 'content-type: application/json' -d '{"number":"personal","limit":5}'
+curl -s -X POST http://127.0.0.1:8080/api/tools/'sms_get'     -H 'content-type: application/json' -d '{"id":"SMxxxxxxxx"}'
+curl -s -X POST http://127.0.0.1:8080/api/tools/'sms_code'    -H 'content-type: application/json' -d '{"number":"personal","query":"Verify"}'
 ```
 
 ## Tests

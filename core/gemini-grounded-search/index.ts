@@ -2,9 +2,9 @@
 // GROUNDED SEARCH engine, in ONE row.
 //
 // WHY THIS PLUGIN EXISTS. The workstation roster registers the capability
-// CONSUMER (`plugins/web-search-tools`: the `web search` / `web search
-// providers` tools) but no `web-search@1` provider host was ever loaded, so
-// every web search answered
+// CONSUMER (`plugins/web-search-tools`: the `web_search_grounded` /
+// `web_search_providers` tools) but no `web-search@1` provider host was ever loaded, so
+// every grounded search answered
 //   {"ok":false,"error":{"code":"missing-service","reason":"web-search.missing-service",
 //    "error":"no web-search@1 provider is loaded: add a 'web-search-impl' row ..."}}
 // (config/workstation.yml DECISION 1, verified raw against the running service).
@@ -14,7 +14,7 @@
 // NOW for ONE engine that needs no third-party search API at all: the Google
 // GEMINI model, whose native `google_search` tool performs GROUNDING server side
 // and returns the sources it used (`groundingMetadata.groundingChunks`). So one
-// row gives every dsh agent a working `web search` whose answers carry real
+// row gives every dsh agent a working `web_search_grounded` whose answers carry real
 // source URLs, and the researcher role (workstation/profiles/gemini-researcher)
 // gets the capability its briefing is about.
 //
@@ -212,7 +212,7 @@ export function apply(ctx: ServiceContext, config: Config = {}): void {
   const fallback = Array.isArray(config.fallback) ? config.fallback.filter((id): id is string => typeof id === 'string') : []
   const configuredProvider = str(config.provider)
 
-  /** Why the engine cannot run right now (the exact failure, for `web search providers`). */
+  /** Why the engine cannot run right now (the exact failure, for `web_search_providers`). */
   let lastReason = `the Gemini API key is not configured: add the credential ${apiKeyEnv} to the harness credential store (${SEARCH_CONFIG_ROW})`
 
   /**
@@ -226,7 +226,7 @@ export function apply(ctx: ServiceContext, config: Config = {}): void {
    * cast - the same runtime call the email/sms/totp providers make.
    *
    * `lastReason` carries the OBSERVED reason (service missing vs reference
-   * unresolved) so `web search providers` never guesses. It never carries a
+   * unresolved) so `web_search_providers` never guesses. It never carries a
    * value: only the names of the fields the store answered with.
    */
   const resolveKey = async (): Promise<string | undefined> => {

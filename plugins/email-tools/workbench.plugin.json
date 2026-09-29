@@ -1,9 +1,9 @@
 {
   "name": "email-tools",
   "version": "0.1.0",
-  "description": "External email CONSUMER: exposes the email capability (email@1) as the tools 'email accounts', 'email list', 'email get' and 'email code' - provider agnostic, it only touches ctx.email",
+  "description": "External email CONSUMER: exposes the email capability (email@1) as the tools 'email_accounts', 'email_list', 'email_get' and 'email_code' - provider agnostic, it only touches ctx.email",
   "entry": "index.ts",
-  "capabilities": ["tool:email accounts", "tool:email list", "tool:email get", "tool:email code"],
+  "capabilities": ["tool:email_accounts", "tool:email_list", "tool:email_get", "tool:email_code"],
   "config": {
     "type": "object",
     "properties": {

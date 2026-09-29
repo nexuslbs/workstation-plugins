@@ -2,7 +2,7 @@
 
 ## What it is
 
-One row that makes the capability `web search` WORK, using the Google **GEMINI**
+One row that makes the `web-search` capability WORK, using the Google **GEMINI**
 API's native `google_search` grounding instead of a third-party search API.
 
 The seam (`definitions/web-search.ts`) has three roles:
@@ -11,7 +11,7 @@ The seam (`definitions/web-search.ts`) has three roles:
 |---|---|
 | Definition | `definitions/web-search.ts` (`ctx['web-search']`) |
 | **Provider (host + engine)** | **this plugin** (`core/web-search-gemini`) |
-| Consumer | `plugins/web-search-tools` (`web search`, `web search providers`) |
+| Consumer | `plugins/web-search-tools` (`web_search_grounded`, `web_search_providers`) |
 
 Before this row the deployment loaded the CONSUMER but no provider host, so every
 search answered:
@@ -64,10 +64,10 @@ call above (READ-ONLY by construction).
 ```bash
 curl -sS -X POST http://workstation:8080/api/tool/call \
   -H 'content-type: application/json' \
-  -d '{"tool":"web search providers"}' | jq .
+  -d '{"tool":"web_search_providers"}' | jq .
 curl -sS -X POST http://workstation:8080/api/tool/call \
   -H 'content-type: application/json' \
-  -d '{"tool":"web search","params":{"query":"what is the latest release of node.js","count":3}}' | jq .
+  -d '{"tool":"web_search_grounded","params":{"query":"what is the latest release of node.js","count":3}}' | jq .
 ```
 
 A missing credential is a TYPED failure naming the credential and the config row

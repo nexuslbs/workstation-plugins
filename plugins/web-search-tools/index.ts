@@ -8,20 +8,20 @@
 //                                       with it (stub, tavily, ...)
 //   Consumer                          - THIS plugin: the agent-facing tools.
 //
-// It imports the DEFINITION only, so the engine behind `web search` is a CONFIG
-// choice and `npm run check:seam` enforces that direction.
+// It imports the DEFINITION only, so the engine behind `web_search_grounded` is
+// a CONFIG choice and `npm run check:seam` enforces that direction.
 //
 // TWO TOOLS, on purpose:
-//   * `web search` - the search itself: query + count + filters, normalized
+//   * `web_search_grounded` - the search itself: query + count + filters, normalized
 //     results with rank/url/title/snippet/engine, caps reported (and the overflow
 //     spilled) exactly like every other capped answer of this repository;
-//   * `web search providers` - introspection: which engines are registered,
+//   * `web_search_providers` - introspection: which engines are registered,
 //     which are configured, which are USABLE and, when one is not, the credential
 //     and the config row to add. This is the tool that tells an operator the
 //     difference between "0 results" (a working engine) and "no engine" (a
 //     configuration gap).
 //
-// A TYPED FAILURE IS RETURNED, NOT THROWN: `web search` answers
+// A TYPED FAILURE IS RETURNED, NOT THROWN: `web_search_grounded` answers
 // `{ ok: false, error: { reason, code, details, error } }` when the capability
 // fails (no engine configured, unknown engine, auth failure, rate limit, network,
 // timeout), so the reason survives the tools seam (which maps a THROWN error to a
@@ -37,20 +37,16 @@ export const name = 'web-search-tools'
 /**
  * Plugin config.
  *
- * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
- * the legal-name tools (`web_search_grounded`, `web_search_providers`) and
- * NEVER the space-named facade tools: the model provider rejects model-facing
- * tool names outside `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a
- * WORKER profile must be composed with `workerFacing: true` while the FACADE
- * keeps the space-named contract unchanged (default: false).
- *
- * The worker-facing name is NOT `web_search`: the harness base bundle already
- * gives every profile that tool over `ctx.web` (packages/bundle/base/
- * cordis.patch.yml), and a second registration of the same name would collide.
- * `web_search_grounded` is the Gemini-grounded engine of THIS repository.
+ * The tool names are snake_case (`web_search_grounded`, `web_search_providers`)
+ * because the model provider rejects model-facing tool names outside
+ * `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`). The name is NOT `web_search`:
+ * the harness base bundle already gives every profile that tool over `ctx.web`
+ * (packages/bundle/base/cordis.patch.yml), and a second registration of the same
+ * name would collide. `web_search_grounded` is the Gemini-grounded engine of
+ * THIS repository.
  */
 export interface Config {
-  workerFacing?: boolean
+  // Reserved for future seams; the tool names above are unconditional.
 }
 
 /** The parameter map of a tool (what `GET /api/tools` publishes). */
@@ -155,16 +151,10 @@ function isService(value: WebSearchService | Record<string, unknown>): value is 
   return typeof (value as WebSearchService).search === 'function'
 }
 
-export function apply(ctx: PluginContext, config: Config = {}): void {
-  // Only the names of the SELECTED plane are registered: in worker-facing mode
-  // a space-named tool MUST NOT exist (the model provider rejects it), and in
-  // facade mode the space-named contract is unchanged.
-  const NAMES = config.workerFacing === true
-    ? { search: 'web_search_grounded', providers: 'web_search_providers' }
-    : { search: 'web search', providers: 'web search providers' }
+export function apply(ctx: PluginContext, _config: Config = {}): void {
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: NAMES.search,
+      name: 'web_search_grounded',
       description:
         'Searches the web through the engine the deployment configured and returns NORMALIZED results (rank, title, url, snippet, published, engine) plus the answer metadata (engine, took_ms, count, truncated, spill_path, ignored_filters). An engine that is missing or broken answers a TYPED error naming the config row to add, never an empty list; a capped result set is reported with truncated=true and written to a spill file that `spill read` pages back.',
       parameters: {
@@ -219,7 +209,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: NAMES.providers,
+      name: 'web_search_providers',
       description:
         'Lists the registered web-search engines with their configured/available state and the reason an engine cannot run (missing credential, disabled engine), plus the selection in effect (default engine, fallback chain, count/maxChars caps). Use it to tell a CONFIGURATION GAP from a query that legitimately found nothing.',
       parameters: {},

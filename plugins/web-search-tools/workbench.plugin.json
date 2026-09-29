@@ -1,11 +1,11 @@
 {
   "name": "web-search-tools",
   "version": "0.1.0",
-  "description": "External web-SEARCH consumer: exposes the `web-search@1` capability as the tools 'web search' (normalized results + caps/spill) and 'web search providers' (configured/available engines + the config row to add) - provider agnostic, no engine named",
+  "description": "External web-SEARCH consumer: exposes the `web-search@1` capability as the tools 'web_search_grounded' (normalized results + caps/spill) and 'web_search_providers' (configured/available engines + the config row to add) - provider agnostic, no engine named",
   "entry": "index.ts",
   "capabilities": [
-    "tool:web search",
-    "tool:web search providers"
+    "tool:web_search_grounded",
+    "tool:web_search_providers"
   ],
   "config": {
     "type": "object",

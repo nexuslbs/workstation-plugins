@@ -1,10 +1,10 @@
 // External workstation plugin: the AGENT-RUN seam of the workstation facade
-// (`agent run`). This is the row the orchestrator delegation surface was missing
+// (`agent_run`). This is the row the orchestrator delegation surface was missing
 // (see config/workstation.yml DECISION 6 and the wiki page
 // Projects/Omniagent/Workstation-Standard-Config.md).
 //
 // The facade (`plugins/http-surface`) dispatches through the harness ToolRuntime,
-// so whatever a facade tool does, `workstation__tool {"tool": "agent run", ...}`
+// so whatever a facade tool does, `workstation__tool {"tool": "agent_run", ...}`
 // does over HTTP: this plugin turns one facade call into ONE dsh worker run - the
 // delegation hop "orchestrator -> workstation__tool -> dsh subagent (profile +
 // template) -> artifact" is exactly this tool.
@@ -225,7 +225,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
    * a manifest. Doing `mkdirSync(profileDir)` first therefore made a role
    * PERMANENTLY undispatchable: the dir existed, the CLI refused, no manifest
    * ever appeared, and every call answered
-   *   agent run: role '<role>' could not be provisioned (no profile at ...)
+   *   agent_run: role '<role>' could not be provisioned (no profile at ...)
    * (observed thread 3263 for a never-seen role). Here the CLI is run against a
    * TEMP home and the finished profile is RENAMED into place, so a
    * manifest-less leftover dir is replaced and the FIRST call of a new role
@@ -304,7 +304,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   ctx.effect(() =>
     ctx.tools.register(defineTool({
-      name: 'agent run',
+      name: 'agent_run',
       description:
         'runs ONE dsh worker agent (a subagent) with a ROLE profile and a briefing and returns its result: role (a profile under $DSH_HOME/profiles), objective (the task) and template (optional briefing file the worker must read first). Each call is an isolated agent process with its own context window and model route; the answer carries the exit code, the worker\'s output and the provisioning notes, so an orchestrator verifies the artifact it asked for instead of trusting prose. A missing DEEPSEEK_API_KEY fails loudly (dsh: MISSING_CREDENTIAL, non-zero exit) after zero work.',
       parameters: {
@@ -336,7 +336,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       },
       execute: async (params) => {
         const objective = str(params.objective)
-        if (objective === undefined) throw new Error("agent run: the 'objective' parameter must be a non-empty task statement")
+        if (objective === undefined) throw new Error("agent_run: the 'objective' parameter must be a non-empty task statement")
         const role = str(params.role) ?? defaultRole
         const template = str(params.template)
         const project = sanitizeProject(str(params.project))
@@ -345,7 +345,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
         const provisioning = await ensureRole(role)
         if (!existsSync(join(dshHome, 'profiles', role, 'package.json'))) {
-          throw new Error(`agent run: role '${role}' could not be provisioned (no profile at ${join(dshHome, 'profiles', role)})`)
+          throw new Error(`agent_run: role '${role}' could not be provisioned (no profile at ${join(dshHome, 'profiles', role)})`)
         }
 
         // The PROJECT workspace is the worker's cwd => the dsh session project

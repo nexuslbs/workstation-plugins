@@ -1,12 +1,12 @@
 {
   "name": "web-search-gemini",
   "version": "0.1.0",
-  "description": "External web SEARCH provider: hosts the web-search@1 service object (registry + selection + cap) and registers ONE engine, `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side web search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
+  "description": "External web SEARCH provider: hosts the web-search@1 service object (registry + selection + cap) and registers ONE engine, `gemini`, whose answers come from the Google GEMINI API's native `google_search` grounding tool (server-side grounded search with real source URLs in groundingMetadata). No third-party search API, no browser, no paid search key: the only request it issues is models/<id>:generateContent with x-goog-api-key resolved BY NAME through ctx.credentials.",
   "entry": "index.ts",
   "capabilities": [{ "id": "web-search", "version": 1, "provider": "gemini" }],
   "config": {
     "type": "object",
-    "description": "The seam config (provider/fallback/count/maxCount/maxChars/spill/timeoutMs) plus the one engine this row hosts. With no row the service is absent and `web search` answers missing-service, exactly as before.",
+    "description": "The seam config (provider/fallback/count/maxCount/maxChars/spill/timeoutMs) plus the one engine this row hosts. With no row the service is absent and `web_search_grounded` answers missing-service, exactly as before.",
     "properties": {
       "provider": { "type": "string", "description": "Default engine id (defaults to the only registered engine, `gemini`)." },
       "fallback": { "type": "array", "description": "Ordered fallback chain consulted when the default engine cannot run." },

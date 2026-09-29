@@ -2024,7 +2024,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
   /**
    * Attaches the network + download observers of a session. They are bounded
    * ring buffers of the provider config and their detach functions are pushed
-   * into the session disposers, so unloading the plugin removes them with the
+   * into the session disposers, so unloading the plugin disposes them with the
    * context (requirement 7: no leaked listener, no leaked browser).
    */
   private observeSession(session: LiveSession): void {

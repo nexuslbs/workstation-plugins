@@ -50,18 +50,8 @@ interface ToolsLike {
 }
 
 export interface Config {
-  /** Cap of one `email list` page (default 10, hard cap 50). */
+  /** Cap of one `email_list` page (default 10, hard cap 50). */
   defaultLimit?: number
-  /**
-   * WORKER-FACING MODE (capability wiring, 2026-09-29). `true` registers ONLY
-   * the legal-name tools (`email_accounts`, `email_list`, `email_get`,
-   * `email_code`, `email_send`) and NEVER the space-named facade tools: the
-   * model provider rejects model-facing tool names outside
-   * `^[a-zA-Z0-9_-]+$` (`Invalid 'tools[0].name'`), so a WORKER profile must be
-   * composed with `workerFacing: true` while the FACADE keeps the space-named
-   * contract unchanged (default: false).
-   */
-  workerFacing?: boolean
 }
 
 export interface EmailToolsContext extends ServiceContext {
@@ -173,9 +163,9 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
   const defaultLimit = Math.min(config.defaultLimit ?? DEFAULT_LIMIT, MAX_LIMIT)
 
   return {
-    'email accounts': {
+    'email_accounts': {
       description:
-        'Lists the configured email accounts (labels only; never a credential). format=labels answers the labels and the default account, format=full adds the address of each account.',
+        'Lists the configured mail accounts (labels only; never a credential). format=labels answers the labels and the default account, format=full adds the address of each account.',
       parameters: {
         format: { type: 'string', description: 'labels (default) or full', enum: ['labels', 'full'] },
       },
@@ -203,7 +193,7 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
         }
       },
     },
-    'email list': {
+    'email_list': {
       description:
         'Lists the most recent messages of a mailbox (default account when no account is given). Optional folder, query, limit, unreadOnly and since filters; the page is capped.',
       parameters: {
@@ -243,10 +233,10 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
         }
       },
     },
-    'email get': {
+    'email_get': {
       description: 'Reads one message by id: the requested body format plus the sender, subject, date and attachment metadata.',
       parameters: {
-        id: { type: 'string', description: 'message id from email list', required: true },
+        id: { type: 'string', description: 'message id from email_list', required: true },
         account: { type: 'string', description: 'account label (default: the configured default account)' },
         folder: { type: 'string', description: 'mail folder (provider default when omitted)' },
         format: { type: 'string', description: 'body format (default text)', enum: ['text', 'markdown', 'raw'] },
@@ -273,7 +263,7 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
         }
       },
     },
-    'email code': {
+    'email_code': {
       description:
         'Finds the newest verification code in a mailbox. Pass id to read one known message, or query/from/scan to search recent ones; pattern overrides the built-in code patterns.',
       parameters: {
@@ -354,7 +344,7 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
         }
       },
     },
-    'email send': {
+    'email_send': {
       description:
         'Sends an email from the selected mailbox (default account when no account is given): required to, subject and body; optional cc, bcc, replyTo and html.',
       parameters: {
@@ -400,26 +390,12 @@ export function tools(config: Config = {}, ctx: ServiceContext): Record<string, 
   }
 }
 
-/** The legal (model-facing) name of each facade tool, for `workerFacing` mode. */
-const WORKER_NAMES: Record<string, string> = {
-  'email accounts': 'email_accounts',
-  'email list': 'email_list',
-  'email get': 'email_get',
-  'email code': 'email_code',
-  'email send': 'email_send',
-}
-
 export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   const registered = tools(config, ctx)
-  // Only the names of the SELECTED plane are registered: in worker-facing mode
-  // a space-named tool MUST NOT exist (the model provider rejects it), and in
-  // facade mode the space-named contract is unchanged.
-  const expose = (toolName: string): string =>
-    config.workerFacing === true ? (WORKER_NAMES[toolName] ?? toolName) : toolName
   const install = (): (() => void) => {
     const disposers = Object.entries(registered).map(([toolName, tool]) =>
       ctx.tools.register(defineTool({
-        name: expose(toolName),
+        name: toolName,
         description: tool.description,
         parameters: tool.parameters,
         execute: tool.handler,

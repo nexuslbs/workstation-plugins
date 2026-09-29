@@ -57,7 +57,7 @@ plugins:
   string on purpose: an unresolved `${cred:NAME}` in the plugin config is a config
   error, while the plugin resolves the name lazily, only for a call that needs it.
 - **Multiple accounts**: the account label is the method parameter that selects
-  the mailbox (`email list --account work`); an omitted label means
+  the mailbox (`email_list --account work`); an omitted label means
   `defaultAccount` (or the first configured account).
 - A `defaultAccount` naming an unknown label is logged and replaced by the first
   configured account (it never fails the load).

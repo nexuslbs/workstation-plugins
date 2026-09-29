@@ -1,4 +1,4 @@
-// Node test suite for plugins/agent-run (the `agent run` seam of the facade).
+// Node test suite for plugins/agent-run (the `agent_run` seam of the facade).
 //
 //   node --test plugins/agent-run/test/agent-run.test.mjs
 //
@@ -12,7 +12,7 @@
 //   profile name
 //
 // so a never-seen role became PERMANENTLY undispatchable
-// (`agent run: role '<role>' could not be provisioned (no profile at ...)`).
+// (`agent_run: role '<role>' could not be provisioned (no profile at ...)`).
 // The plugin now initialises the role in a TEMP home and RENAMES the finished
 // profile into place, and decides on the MANIFEST (never on the init exit
 // code, which the real CLI has been observed to return non-zero even after
@@ -107,7 +107,7 @@ async function withEnv(env, body) {
   }
 }
 
-/** Load the plugin against a fixture and return its registered `agent run` tool. */
+/** Load the plugin against a fixture and return its registered `agent_run` tool. */
 function toolFor(fix) {
   const registrations = []
   const ctx = {
@@ -130,8 +130,8 @@ function toolFor(fix) {
     defaultRole: 'developer',
     timeoutSecs: 30,
   })
-  const tool = registrations.find((entry) => entry.name === 'agent run')
-  assert.ok(tool, 'the plugin must register the "agent run" tool')
+  const tool = registrations.find((entry) => entry.name === 'agent_run')
+  assert.ok(tool, 'the plugin must register the "agent_run" tool')
   return tool
 }
 
@@ -150,12 +150,12 @@ function defineRole(fix, role) {
 
 const manifestOf = (fix, role) => join(fix.dshHome, 'profiles', role, 'package.json')
 
-test('the plugin is the agent-run seam and registers the typed "agent run" tool', () => {
+test('the plugin is the agent-run seam and registers the typed "agent_run" tool', () => {
   const fix = fixture()
   try {
     assert.equal(name, 'agent-run')
     const tool = toolFor(fix)
-    assert.equal(tool.name, 'agent run')
+    assert.equal(tool.name, 'agent_run')
     assert.deepEqual(
       Object.keys(tool.parameters.properties).sort(),
       ['objective', 'project', 'role', 'template', 'timeoutSecs', 'workdir'],

@@ -3,8 +3,8 @@
 // WHY THIS EXISTS (operator rule, telegram thread 3346, 2026-09-27): a dsh worker
 // runs under ONE fixed role profile and a `subagent` inherits its parent's
 // profile/model, so a running worker cannot switch itself to another role. Until
-// now the only delegation seam was the FACADE tool `agent run`, i.e. the hop
-// worker -> WEB-SEARCH-REQUEST block -> orchestrator -> `agent run websearcher`
+// now the only delegation seam was the FACADE tool `agent_run`, i.e. the hop
+// worker -> WEB-SEARCH-REQUEST block -> orchestrator -> `agent_run websearcher`
 // -> worker. The operator rejected that: it wastes orchestrator tokens and the
 // orchestrator must stay at the MACRO level. Requirement: **dsh agents must be
 // able to call other dsh agents directly**, and the single-purpose roles (the

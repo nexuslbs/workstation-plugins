@@ -4,7 +4,7 @@ The **orchestrator delegation seam** of the workstation facade: ONE facade call 
 `dsh` worker agent.
 
 ```
-workstation__tool {"tool": "agent run", "params": {
+workstation__tool {"tool": "agent_run", "params": {
   "role": "developer",
   "project": "workstation",
   "objective": "<goal + success criteria + evidence to return>",
@@ -96,8 +96,8 @@ plugin is rolled out with NO container restart:
 
 1. place the new `index.ts` on the plugin-source volume (production source of truth,
    `/var/lib/workstation/sources/workstation-plugins/plugins/agent-run/index.ts`);
-2. `plugin remove {"id":"agent-run"}` then
-   `plugin add {"id":"agent-run","module":"<that path>","layer":"config","config":{...}}`:
+2. `plugin_remove {"id":"agent-run"}` then
+   `plugin_add {"id":"agent-run","module":"<that path>","layer":"config","config":{...}}`:
    the row is disposed and re-imported in the RUNNING process (the module URL is unchanged, so the
    code change is what the re-import must pick up - verify the new fields in the next answer).
 

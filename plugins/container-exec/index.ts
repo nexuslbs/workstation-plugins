@@ -19,9 +19,7 @@
  * the target, the transport never falls back to the host.
  *
  * NAMING: tool names are `<id>_exec` - legal model-facing names
- * (`^[a-zA-Z0-9_-]+$`), unlike the space-named facade tools. The worker-facing
- * rows are declared with `workerFacing: true` in the role patches (see
- * workstation/profiles/_capabilities/capabilities.yml in omni-root).
+ * (`^[a-zA-Z0-9_-]+$`), snake_case like every other tool of this repository.
  */
 
 import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'

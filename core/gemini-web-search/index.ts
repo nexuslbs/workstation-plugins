@@ -331,7 +331,7 @@ export class GeminiSearchProvider implements WebSearchProvider {
     const options = this.options
     const query = str(request.query)
     if (query === undefined) {
-      throw new GeminiWebError('WEB_PROVIDER_ERROR', 'a Gemini web search needs a non-empty query', 'query', { provider: options.id })
+      throw new GeminiWebError('WEB_PROVIDER_ERROR', 'a Gemini grounded search needs a non-empty query', 'query', { provider: options.id })
     }
     if (signal?.aborted === true) throw abortError()
     const resolution = await options.resolveKey()
@@ -427,7 +427,7 @@ export class GeminiSearchProvider implements WebSearchProvider {
 
 /** The seam's cancellation error, structurally. */
 function abortError(): GeminiWebError {
-  return new GeminiWebError('WEB_ABORTED', 'the Gemini web search was aborted by its caller', 'abort')
+  return new GeminiWebError('WEB_ABORTED', 'the Gemini grounded search was aborted by its caller', 'abort')
 }
 
 /** The `ctx.web` seam of this context, or undefined (never throws). */
@@ -474,7 +474,7 @@ export function apply(ctx: ServiceContext, config: Config = {}): void {
     }
     seam.registerSearchProvider(provider)
     log.info(
-      `ctx.web search provider registered: id=${providerId} model=${model} grounded=${grounded} credential=${apiKeyEnv}`,
+      `ctx.web provider registered: id=${providerId} model=${model} grounded=${grounded} credential=${apiKeyEnv}`,
     )
   }
 

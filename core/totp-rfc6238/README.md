@@ -7,7 +7,7 @@ External plugin for the workbench `totp@1` capability seam (core
 | --- | --- | --- |
 | Definition | core `src/totp/definition.ts` (`ctx.totp`) | the contract: `entries()`, `code(label, { at })` |
 | **Provider** | **this plugin** | RFC 4226/6238 TOTP over `node:crypto` HMAC |
-| Consumer | `plugins/totp-tools` | the tools `totp list` / `totp code` |
+| Consumer | `plugins/totp-tools` | the tools `totp_list` / `totp_code` |
 
 It imports nothing from the core: it registers an implementation of the published
 contract, and the manifest declaration is what makes that legal.

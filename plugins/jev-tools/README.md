@@ -174,12 +174,12 @@ bypassed:
 The two planes are wired separately (verified live):
 
 - **Facade plane** (omniagent calls the tools over `POST /api/tool/call`): a live
-  row, `plugin add {..., "layer":"config"}` to persist it in
+  row, `plugin_add {..., "layer":"config"}` to persist it in
   `config/workstation.yml`.
 - **Agent plane** (dsh workers): the profile patch file may only OVERRIDE bundle
   rows (`patch: entry "jev-tools" not found`), so a role gains the tools through
   an explicit `insert:` entry in
-  `/opt/omni/workstation/profiles/<role>/cordis.patch.yml` - which `agent run`
+  `/opt/omni/workstation/profiles/<role>/cordis.patch.yml` - which `agent_run`
   copies into `$DSH_HOME/profiles/<role>/` on every dispatch. The facade overlay
   (`WORKSTATION_CONFIG_FILE`) is NOT composed by a worker CLI run, so a roster row
   alone never reaches a worker.
@@ -199,7 +199,7 @@ across every add/remove cycle, so no restart happened):
 
 ```sh
 curl -s http://workstation:8080/api/tools          # 23 tools, no jev*
-POST /api/tool/call {"tool":"plugin add","params":{"id":"...","module":".../plugins/jev-tools/index.ts",
+POST /api/tool/call {"tool":"plugin_add","params":{"id":"...","module":".../plugins/jev-tools/index.ts",
   "config":{"credential":"JEV_API_KEY"}}}
 # {"declared":true,"mounted":true,"tools_added":[]}      <- GATE CLOSED without the credential
 # with a resolvable credential NAME:
@@ -233,7 +233,7 @@ only the `ok: true` answer awaits the key.
    is read by the provider per process, so a name added to a RUNNING process's
    document is not automatically re-read by that process.
 2. **Facade plane**: mount the row live and persist it -
-   `POST /api/tool/call {"tool":"plugin add","params":{"id":"jev-tools","layer":"config","module":"/var/lib/workstation/sources/workstation-plugins/plugins/jev-tools/index.ts","config":{"credential":"JEV_API_KEY"}}}`.
+   `POST /api/tool/call {"tool":"plugin_add","params":{"id":"jev-tools","layer":"config","module":"/var/lib/workstation/sources/workstation-plugins/plugins/jev-tools/index.ts","config":{"credential":"JEV_API_KEY"}}}`.
    (Use the SOURCE-CACHE path in production - the named volume the entrypoint
    clones into; `/opt/workspace/...` works for a live demo but is not a
    deployment path.)
@@ -241,13 +241,13 @@ only the `ok: true` answer awaits the key.
    `/opt/omni/workstation/profiles/<role>/cordis.patch.yml` for every role that
    should see Jev (the file is copied into the role profile on each dispatch).
 4. **Verify**: `curl -s http://workstation:8080/api/tools` lists the six `jev_`
-   tools; `plugin list` shows the row mounted; `jev_providers` answers
+   tools; `plugin_list` shows the row mounted; `jev_providers` answers
    `credentialConfigured: true`.
 5. **Make ONE real call** (`jev_noul` with a small state) and expect
    `{"ok":true,...}`. A `jev.unauthorized` means the seeded value is not a valid
    Jev key; `jev.credentials-missing` means the row's NAME and the seeded NAME
    differ.
-6. **Rollback**: `plugin remove {"id":"jev-tools"}` (and drop the role-patch
+6. **Rollback**: `plugin_remove {"id":"jev-tools"}` (and drop the role-patch
    insert) returns both planes to the pre-activation tool list; deleting the NAME
    closes the gate even if a row stays mounted.
 
