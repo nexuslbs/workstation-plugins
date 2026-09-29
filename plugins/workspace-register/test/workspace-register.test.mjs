@@ -5,8 +5,12 @@
 //
 // It proves, WITHOUT the harness, a model call, a network or a container:
 //   * the tool is registered snake_case with an OPTIONAL `project` parameter;
-//   * `backfillWorkspaces` groups stored headers by CANONICAL cwd and attaches
-//     ONLY the sessions whose cwd equals the workspace path;
+//   * `backfillWorkspaces` with no `project` registers ONE workspace for EVERY
+//     distinct canonical cwd root - project directories AND legacy direct-run
+//     roots outside the projects dir (a `/harness`-style root gets its own);
+//   * two roots that merely share a basename stay two distinct workspaces
+//     (never merged: the registry keys `create()` on the canonical path);
+//   * it attaches ONLY the sessions whose canonical cwd equals the root;
 //   * the flow is idempotent end to end (a second pass attaches nothing);
 //   * an explicit `project` restricts the pass to one directory;
 //   * an unresolvable project directory is reported in `errors`, never fatal.
@@ -84,44 +88,54 @@ test('the plugin registers the snake_case "workspace_register" tool with an opti
   const tool = registrations.find((entry) => entry.name === 'workspace_register')
   assert.ok(tool, 'the plugin must register the "workspace_register" tool')
   assert.deepEqual(Object.keys(tool.parameters.properties), ['project'])
-  assert.equal(tool.parameters.required, undefined, 'project must be optional (omit = all projects)')
+  assert.equal(tool.parameters.required, undefined, 'project must be optional (omit = all roots)')
 })
 
-test('backfill groups by canonical cwd, attaches only matching sessions, and is idempotent', async () => {
+test('all-roots backfill registers a legacy root outside projectsDir and attaches only matching sessions', async () => {
   const fix = fixture()
   try {
     const alpha = join(fix.projectsDir, 'alpha')
     const beta = join(fix.projectsDir, 'beta')
-    const elsewhere = join(fix.root, 'elsewhere')
-    mkdirSync(elsewhere, { recursive: true })
+    // A legacy direct-run root OUTSIDE the projects dir, like /harness.
+    const harness = join(fix.root, 'harness')
+    mkdirSync(harness, { recursive: true })
+
     const reg = registry()
     const store = persistence([
       { id: 'a-1', cwd: alpha },
       { id: 'a-2', cwd: alpha },
-      { id: 'a-mismatch', cwd: elsewhere },
+      { id: 'h-1', cwd: harness },
       { id: 'b-1', cwd: beta },
       { id: 'no-cwd' },
     ])
 
     const first = await backfillWorkspaces({ registry: reg, persistence: store, projectsDir: fix.projectsDir })
-    assert.deepEqual(first.workspaces.map((entry) => entry.project), ['alpha', 'beta'])
-    assert.equal(first.totals.workspaces, 2)
-    assert.equal(first.totals.sessions, 3, 'only the three matching sessions are attached')
-    assert.equal(first.totals.attached, 3)
+    assert.equal(first.totals.workspaces, 3, 'one workspace per distinct canonical cwd root')
+    assert.equal(first.totals.sessions, 4, 'only the four matching sessions are attached')
+    assert.equal(first.totals.attached, 4)
     assert.equal(first.totals.skipped, 0)
-    assert.equal(first.totals.created, 2)
+    assert.equal(first.totals.created, 3)
     assert.deepEqual(first.errors, [])
+    assert.deepEqual(first.workspaces.map((entry) => entry.project).sort(), ['alpha', 'beta', 'harness'])
 
-    const alphaEvidence = first.workspaces.find((entry) => entry.project === 'alpha')
+    // Deterministic: workspaces are sorted by canonical path, not insertion order.
+    const paths = first.workspaces.map((entry) => entry.path)
+    assert.deepEqual(paths, [...paths].sort())
+
+    const alphaEvidence = first.workspaces.find((entry) => entry.path === alpha)
     assert.deepEqual([...alphaEvidence.sessionIds].sort(), ['a-1', 'a-2'])
-    assert.ok(!alphaEvidence.sessionIds.includes('a-mismatch'), 'a cwd mismatch must never be attached')
-    assert.equal(first.workspaces.find((entry) => entry.project === 'beta').sessionIds[0], 'b-1')
+    assert.ok(!alphaEvidence.sessionIds.includes('h-1'), 'a cwd mismatch must never cross-attach')
+    assert.ok(!alphaEvidence.sessionIds.includes('b-1'), 'a cwd mismatch must never cross-attach')
+
+    const harnessEvidence = first.workspaces.find((entry) => entry.path === harness)
+    assert.equal(harnessEvidence.title, 'harness', 'title is the basename of the canonical root')
+    assert.deepEqual(harnessEvidence.sessionIds, ['h-1'])
 
     // IDEMPOTENT: a second pass creates nothing and attaches nothing.
     const second = await backfillWorkspaces({ registry: reg, persistence: store, projectsDir: fix.projectsDir })
     assert.equal(second.totals.created, 0)
     assert.equal(second.totals.attached, 0)
-    assert.equal(second.totals.sessions, 3)
+    assert.equal(second.totals.sessions, 4)
     assert.deepEqual(
       second.workspaces.map((entry) => entry.sessionIds.slice().sort()),
       first.workspaces.map((entry) => entry.sessionIds.slice().sort()),
@@ -131,11 +145,45 @@ test('backfill groups by canonical cwd, attaches only matching sessions, and is 
   }
 })
 
+test('two roots with the same basename become two workspaces, never merged', async () => {
+  const fix = fixture()
+  try {
+    const rootA = join(fix.root, 'a', 'shared')
+    const rootB = join(fix.root, 'b', 'shared')
+    mkdirSync(rootA, { recursive: true })
+    mkdirSync(rootB, { recursive: true })
+
+    const result = await backfillWorkspaces({
+      registry: registry(),
+      persistence: persistence([
+        { id: 'x-1', cwd: rootA },
+        { id: 'y-1', cwd: rootB },
+      ]),
+      projectsDir: fix.projectsDir,
+    })
+
+    const shared = result.workspaces.filter((entry) => entry.project === 'shared')
+    assert.equal(shared.length, 2, 'same basename must not collapse into one workspace')
+    assert.notEqual(shared[0].path, shared[1].path)
+    assert.deepEqual(shared.map((entry) => entry.path).sort(), [rootA, rootB].sort())
+    assert.deepEqual(shared.find((entry) => entry.path === rootA).sessionIds, ['x-1'])
+    assert.deepEqual(shared.find((entry) => entry.path === rootB).sessionIds, ['y-1'])
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
 test('an explicit project restricts the pass and an unresolvable directory is reported, not fatal', async () => {
   const fix = fixture()
   try {
+    const alpha = join(fix.projectsDir, 'alpha')
+    const harness = join(fix.root, 'harness')
+    mkdirSync(harness, { recursive: true })
     const reg = registry()
-    const store = persistence([{ id: 'a-1', cwd: join(fix.projectsDir, 'alpha') }])
+    const store = persistence([
+      { id: 'a-1', cwd: alpha },
+      { id: 'h-1', cwd: harness },
+    ])
     const onlyAlpha = await backfillWorkspaces({
       registry: reg,
       persistence: store,
@@ -143,7 +191,9 @@ test('an explicit project restricts the pass and an unresolvable directory is re
       project: 'ALPHA',
     })
     assert.deepEqual(onlyAlpha.workspaces.map((entry) => entry.project), ['alpha'])
-    assert.equal(onlyAlpha.totals.attached, 1)
+    assert.equal(onlyAlpha.totals.workspaces, 1)
+    assert.equal(onlyAlpha.totals.attached, 1, 'single-project mode must not touch the legacy root')
+    assert.ok(!reg.entities.has(harness), 'the legacy root must stay unregistered in single-project mode')
 
     const missing = await backfillWorkspaces({
       registry: registry(),

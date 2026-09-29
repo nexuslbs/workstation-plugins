@@ -11,8 +11,10 @@
 // those directories, so the webserver showed no projects.
 //
 // This plugin owns the BACKFILL half of the fix: `workspace_register` registers
-// EVERY project directory (or one named project) and attaches the stored
-// sessions whose canonical cwd matches it. The per-dispatch half lives in
+// EVERY distinct canonical cwd root - the project directories AND the legacy
+// direct-run roots (`/harness`, `/var/lib/workstation/work/<role>`,
+// `/opt/omni/data`) - or one named project, and attaches the stored sessions
+// whose canonical cwd matches it. The per-dispatch half lives in
 // plugins/agent-run (`apply()` ensures the workspace before a run and attaches
 // the created session after it); both import the SAME helper,
 // `./registration.ts`, so they cannot drift.
@@ -76,11 +78,11 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     ctx.tools.register(defineTool({
       name: 'workspace_register',
       description:
-        'Registers the workstation PROJECT workspaces in the dsh workspace registry (ctx.workspaceRegistry) so the webserver groups sessions per project. With no parameter it registers EVERY project directory under the projects root (idempotent: repeat calls reuse the registration) and attaches the stored sessions whose canonical cwd equals each workspace path. Pass project=<name> to register exactly one. Returns raw registry evidence per workspace (id, path, title, full sessionIds list, timestamps, what this call created/attached) plus totals.',
+        'Registers the workstation cwd-root workspaces in the dsh workspace registry (ctx.workspaceRegistry) so the webserver groups sessions per workspace. With no parameter it registers ONE workspace for EVERY distinct canonical cwd root found in sessionPersistence.list() - project directories under the projects root AND legacy direct-run roots such as /harness or /var/lib/workstation/work/<role> - titling each by the basename of its canonical path (idempotent: repeat calls reuse the registration) and attaches the stored sessions whose canonical cwd equals each workspace path. Pass project=<name> to register exactly one project directory. Returns raw registry evidence per workspace (id, path, title, full sessionIds list, timestamps, what this call created/attached) plus totals.',
       parameters: {
         project: {
           type: 'string',
-          description: 'one project directory name under the projects root (e.g. workstation, asset-pipeline); omit to register ALL project directories',
+          description: 'one project directory name under the projects root (e.g. workstation, asset-pipeline); omit to register EVERY distinct canonical cwd root',
         },
       },
       execute: async (params): Promise<BackfillResult> => {

@@ -1,7 +1,9 @@
-// Shared PROJECT -> Workspace registration helper.
+// Shared cwd-root -> Workspace registration helper.
 //
-// ONE project directory (`<projectsDir>/<project>`) is ONE dsh session bucket,
-// because the worker's cwd IS the project directory (plugins/agent-run). The
+// ONE stored-session cwd root is ONE dsh session bucket. The project sessions
+// live under `<projectsDir>/<project>` (plugins/agent-run runs each worker with
+// that cwd) and the legacy direct-run sessions live under roots such as
+// `/harness`, `/var/lib/workstation/work/<role>` or `/opt/omni/data`. The
 // harness workspace registry (ctx.workspaceRegistry) groups sessions under a
 // Workspace only when BOTH facts hold:
 //
@@ -30,7 +32,7 @@
 
 import { readdirSync, statSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 /** The immutable facts of one stored session the registry validates against. */
 export interface SessionHeaderLike {
@@ -79,7 +81,10 @@ export interface AttachOutcome {
 
 /** Raw per-workspace evidence the backfill reports. */
 export interface WorkspaceEvidence {
-  /** Project directory name under `projectsDir`. */
+  /**
+   * Registration label: the project name in single-project mode, else the
+   * basename of the canonical cwd root.
+   */
   project: string
   id: string
   path: string
@@ -198,15 +203,22 @@ export async function attachSessionIds(
 }
 
 /**
- * Backfill Workspace registrations for the project directories under
- * `projectsDir`.
+ * Backfill Workspace registrations.
  *
- * With `project` omitted every project directory is registered; with it, only
- * that one. For each project: canonicalize the directory, idempotent
- * `create(path, title=<project>)`, then attach every stored session header
- * whose canonical cwd equals that path. One `sessionPersistence.list()` call
- * serves every project. Per-project failures are collected in `errors` instead
- * of aborting the run.
+ * With `project` omitted this registers ONE Workspace for EVERY distinct
+ * canonical cwd root discovered in `sessionPersistence.list()`: the project
+ * directories under `projectsDir` AND the legacy direct-run roots (`/harness`,
+ * `/var/lib/workstation/work/<role>`, `/opt/omni/data`, ...). Each root's title
+ * is the basename of its canonical path, so two roots that merely share a
+ * basename stay two distinct Workspaces - the registry keys `create()` on the
+ * canonical path, never on the title. With `project` given only
+ * `<projectsDir>/<project>` is registered, exactly as before.
+ *
+ * For each target: canonicalize the directory (all-roots paths are already
+ * canonical), idempotent `create(path, title=label)`, then attach every stored
+ * session header whose canonical cwd equals that path. One
+ * `sessionPersistence.list()` call serves every workspace. Per-workspace
+ * failures are collected in `errors` instead of aborting the run.
  */
 export async function backfillWorkspaces(options: {
   registry: WorkspaceRegistryLike
@@ -216,11 +228,10 @@ export async function backfillWorkspaces(options: {
 }): Promise<BackfillResult> {
   const { registry, persistence, projectsDir } = options
   const requested = options.project === undefined ? undefined : sanitizeProject(options.project)
-  const projects = requested === undefined || requested.length === 0
-    ? projectNames(projectsDir)
-    : [requested]
+  // An omitted or empty `project` means ALL roots; otherwise exactly one.
+  const singleProject = requested !== undefined && requested.length > 0 ? requested : undefined
 
-  // ONE listing for every project: map canonical cwd -> stored session ids.
+  // ONE listing for every workspace: map canonical cwd -> stored session ids.
   const snapshots = await persistence.list()
   const canonicalByCwd = new Map<string, string | undefined>()
   const byPath = new Map<string, string[]>()
@@ -237,26 +248,46 @@ export async function backfillWorkspaces(options: {
     else bucket.push(header.id)
   }
 
+  // Registration targets. All-roots mode: one per distinct canonical cwd,
+  // sorted by path for determinism. Single-project mode: exactly that one
+  // directory under `projectsDir` (canonicalized below).
+  const targets: Array<{
+    label: string
+    canonical?: string
+    directory?: string
+    candidates: string[]
+  }> = singleProject === undefined
+    ? [...byPath.keys()].sort().map((path) => ({
+        label: basename(path),
+        canonical: path,
+        candidates: byPath.get(path) ?? [],
+      }))
+    : [{ label: singleProject, directory: join(projectsDir, singleProject), candidates: [] }]
+
   const knownPaths = new Set<string>((registry.list?.() ?? []).map((workspace) => workspace.path))
   const workspaces: WorkspaceEvidence[] = []
   const errors: Array<{ project: string; error: string }> = []
 
-  for (const project of projects) {
-    if (project.length === 0) continue
-    const directory = join(projectsDir, project)
+  for (const target of targets) {
+    const label = target.label
+    if (label.length === 0) continue
     try {
-      const path = await canonicalDirectory(directory)
+      const path = target.canonical
+        ?? (target.directory === undefined ? undefined : await canonicalDirectory(target.directory))
       if (path === undefined) {
-        errors.push({ project, error: `project directory does not resolve to a directory: ${directory}` })
+        errors.push({
+          project: label,
+          error: `project directory does not resolve to a directory: ${target.directory ?? label}`,
+        })
         continue
       }
       const created = !knownPaths.has(path)
-      const workspace = await ensureWorkspace(registry, path, project)
+      const workspace = await ensureWorkspace(registry, path, label)
       knownPaths.add(workspace.path)
-      const candidates = byPath.get(workspace.path) ?? []
+      const candidates = target.candidates.length > 0 ? target.candidates : (byPath.get(workspace.path) ?? [])
       const outcome = await attachSessionIds(workspace, candidates)
       workspaces.push({
-        project,
+        project: label,
         id: String(workspace.id),
         path: workspace.path,
         title: workspace.title,
@@ -269,7 +300,7 @@ export async function backfillWorkspaces(options: {
         skipped: outcome.skipped,
       })
     } catch (error) {
-      errors.push({ project, error: error instanceof Error ? error.message : String(error) })
+      errors.push({ project: label, error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -282,7 +313,7 @@ export async function backfillWorkspaces(options: {
   }
   return {
     projectsDir,
-    ...(requested === undefined || requested.length === 0 ? {} : { project: requested }),
+    ...(singleProject === undefined ? {} : { project: singleProject }),
     workspaces,
     totals,
     errors,
