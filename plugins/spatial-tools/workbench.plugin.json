@@ -1,0 +1,24 @@
+{
+  "name": "spatial-tools",
+  "version": "0.1.0",
+  "description": "Thin, keyless client of the gods-eye-view spatial-intelligence service: four read-only GET tools (spatial_status, spatial_events, spatial_contacts, spatial_cameras) over the service's already-normalized JSON routes. Config carries the service base URL; no key, no GEV code and no hardcoded URL lives here.",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "required": ["baseUrl"],
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Base URL of the running gods-eye-view service, e.g. 'http://gods-eye-view:4173'. REQUIRED - there is no default and the plugin refuses to register without it."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "description": "Per-request upstream timeout in ms (default 45000, clamped to 1000..120000). Live upstreams can be slow; the service caches per source."
+      },
+      "maxTraceContacts": {
+        "type": "integer",
+        "description": "Cap on the per-aircraft /api/opensky-track lookups a trace=true contacts call makes (default 3)."
+      }
+    }
+  }
+}
