@@ -1,0 +1,15 @@
+{
+  "name": "workspace-register",
+  "version": "0.1.0",
+  "description": "Registers workstation PROJECT directories in the dsh workspace registry (ctx.workspaceRegistry) so the webserver groups sessions per project. The `workspace_register` backfill tool enumerates the project directories under the projects root, idempotently creates one Workspace per canonical directory, and attaches every stored session whose canonical cwd equals that path. Shares its registration helper with plugins/agent-run's per-dispatch auto-registration.",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "properties": {
+      "projectsDir": {
+        "type": "string",
+        "description": "Root of the PROJECT directories (default $WORKSTATION_PROJECTS_DIR or /var/lib/workstation/projects); one subdirectory per project."
+      }
+    }
+  }
+}
