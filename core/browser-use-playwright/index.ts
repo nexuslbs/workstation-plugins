@@ -314,7 +314,7 @@ function firstLineOf(error: unknown): string {
 export class PlaywrightProvider implements BrowserUseProvider {
   readonly id = providerId
   private readonly config: ResolvedProviderConfig
-  private readonly credentials?: { resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> }
+  private readonly credentials?: { resolve(ref: string | { name: string; scope?: string }): Promise<{ value?: string } | undefined> }
   /**
    * The `general-service@1` seam, used ONLY to start a configured browser
    * service. Accepted as the SERVICE or as a RESOLVER: the service can load
@@ -338,7 +338,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
 
   constructor(
     config: BrowserUsePlaywrightConfig = {},
-    credentials?: { resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> },
+    credentials?: { resolve(ref: string | { name: string; scope?: string }): Promise<{ value?: string } | undefined> },
     generalService?: GeneralServiceLike | (() => GeneralServiceLike | undefined),
   ) {
     const bounds = { screenshotDir: undefined, storageStateDir: undefined }
@@ -2097,7 +2097,7 @@ const STATE_ACTIONS: readonly string[] = ['save', 'read', 'clear']
 
 /** The credentials service as THIS provider uses it (structural: no import). */
 interface CredentialsLike {
-  resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined>
+  resolve(ref: string | { name: string; scope?: string }): Promise<{ value?: string } | undefined>
 }
 
 /** The cookie count and the localStorage ORIGINS of a state file (never a value). */

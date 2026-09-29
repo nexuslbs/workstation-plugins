@@ -134,7 +134,7 @@ export interface ProviderLike {
 
 /** Credential resolution, as `ctx.credentials` offers it (never a value list). */
 interface CredentialsLike {
-  resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> | { value?: string } | undefined
+  resolve(ref: string | { name: string; scope?: string }): Promise<{ value?: string } | undefined> | { value?: string } | undefined
 }
 
 /** The context surface this plugin uses (no core import, no provider registry). */

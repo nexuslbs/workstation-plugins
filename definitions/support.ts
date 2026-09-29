@@ -26,7 +26,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { LoggerServiceLike } from './logger.ts'
 
-/** A credential reference: a NAME (plus an optional scope), never a value. */
+/**
+ * A credential reference: a NAME (plus an optional scope), never a value.
+ *
+ * The harness spells the reference as a BRANDED STRING (`credentialRef('NAME')`),
+ * which is a plain string at runtime; some hosts/providers also accept the
+ * object form. `CredentialsLike.resolve` therefore takes either spelling.
+ */
 export interface CredentialRef {
   name: string
   scope?: string
@@ -34,7 +40,7 @@ export interface CredentialRef {
 
 /** The consumer-visible subset of the core `credentials@1` capability. */
 export interface CredentialsLike {
-  resolve(ref: CredentialRef): Promise<{ value?: string } | undefined>
+  resolve(ref: CredentialRef | string): Promise<{ value?: string } | undefined>
 }
 
 /**

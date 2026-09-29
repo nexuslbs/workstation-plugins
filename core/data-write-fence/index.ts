@@ -42,10 +42,6 @@ export const DEFAULT_MUTATING_TOOLS = ['write', 'edit'] as const
 /** Argument names a mutation may carry its target in (first present wins). */
 export const DEFAULT_PATH_ARGS = ['file_path', 'path', 'target', 'target_path'] as const
 
-interface ToolParameters {
-  [key: string]: unknown
-}
-
 interface ToolsLike {
   register(def: ToolDefinition): () => void
   /** Monotonic execution guard: return a reason to deny, `undefined` to allow. */
@@ -55,6 +51,13 @@ interface ToolsLike {
 interface PluginContext {
   tools: ToolsLike
   effect(callback: () => () => void): void
+  /**
+   * Deferred dependency declaration (`ctx.inject(['tools'], ...)`), when the host
+   * offers it: `ctx.tools` is an INJECTED service, so a bare property read on the
+   * profile context throws. Absent on a bare test context, which passes `tools`
+   * directly.
+   */
+  inject?(deps: string[], callback: (injected: PluginContext) => void): unknown
   logger?: { info?(...args: unknown[]): void; warn?(...args: unknown[]): void }
 }
 
@@ -180,7 +183,7 @@ function mountFence(ctx: PluginContext, allow: string[], config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'write_fence',
     description: 'reports the directories this role may write to (the enforced fence) and whether the guard is active',
-    parameters: {} as ToolParameters,
+    parameters: {},
     execute: async () => ({
       active: true,
       allow: allow.map((root) => ({ root, resolved: canonicalPath(root) })),
