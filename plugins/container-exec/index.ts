@@ -18,6 +18,12 @@
  * Both modes go through the SAME `container` transport; the config row names
  * the target, the transport never falls back to the host.
  *
+ * TARGET PROJECT: the compose project directory the exec mode passes as
+ * `--project-directory` is CONFIGURABLE - the row's `projectDir` wins, else
+ * `$WORKSTATION_EXEC_PROJECT`, else the production-safe default `/opt/omni`.
+ * A dev/validation deployment (omnidev, omnistable) points it at its own tree
+ * so a concern exec never lands in the production project.
+ *
  * NAMING: tool names are `<id>_exec` - legal model-facing names
  * (`^[a-zA-Z0-9_-]+$`), snake_case like every other tool of this repository.
  */
@@ -50,13 +56,21 @@ export interface ConcernConfig {
 export interface Config {
   /** concern id -> row; each row registers one `<id>_exec` tool. */
   concerns?: Record<string, ConcernConfig>
+  /** Compose project directory override (default: $WORKSTATION_EXEC_PROJECT, else `/opt/omni`). */
+  projectDir?: string
 }
 
-/** The compose project the concern services belong to (mirror of docker-impl). */
-const COMPOSE_PROJECT_DIR = '/opt/omni'
+/** The production-safe compose project dir when nothing overrides it (mirror of docker-impl). */
+const DEFAULT_PROJECT_DIR = '/opt/omni'
+
+/** Trimmed non-empty string, or the fallback (same helper as tools-typed). */
+function nonEmptyString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback
+}
 
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const concerns = (config.concerns ?? {}) as Record<string, ConcernConfig>
+  const projectDir = nonEmptyString(config.projectDir, nonEmptyString(process.env.WORKSTATION_EXEC_PROJECT, DEFAULT_PROJECT_DIR))
   for (const [id, concern] of Object.entries(concerns)) {
     const service = concern.service
     const image = concern.image
@@ -96,7 +110,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         }
         const target: GeneralServiceConfig = run
           ? { type: 'container', params: { engine: 'docker', image } }
-          : { type: 'container', params: { engine: 'docker-compose', compose: { project_dir: COMPOSE_PROJECT_DIR, service } } }
+          : { type: 'container', params: { engine: 'docker-compose', compose: { project_dir: projectDir, service } } }
         const result = await general.call(command, target)
         return { ok: true, service, mode: run ? 'docker-run' : 'compose-exec', ...result }
       },
