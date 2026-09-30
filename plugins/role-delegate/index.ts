@@ -49,7 +49,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
-import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
+import { collectUsage, listSessionIds, projectKey, usageMarker, usageToken } from '../../shared/usage.ts'
 
 /** One declared tool parameter (the property map the core publishes). */
 interface ToolParameter {
@@ -140,6 +141,19 @@ function tail(text: string, limit: number): string {
   return `[...${text.length - limit} chars elided...]\n${text.slice(text.length - limit)}`
 }
 
+/**
+ * Render the NORMAL result for the model, WITHOUT the additive `_meta` block.
+ * `_meta.usage` is accounting data for the PARENT agent (persisted through
+ * `output.presentationMeta`), never model-facing content.
+ */
+function renderPublicResult(args: unknown, value: unknown): ContentBlock[] {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const { _meta: _ignored, ...rest } = value as Record<string, unknown>
+    return renderValue(args, rest)
+  }
+  return renderValue(args, value)
+}
+
 /** A project name is ONE path segment: lowercase, short, no traversal. */
 function sanitizeProject(raw: string | undefined): string {
   const cleaned = (raw ?? 'default')
@@ -183,6 +197,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const dshHome = str(config.dshHome) ?? str(process.env.DSH_HOME) ?? '/var/lib/workstation'
   const roleProfilesDir = str(config.roleProfilesDir) ?? '/opt/omni/workstation/profiles'
   const projectsDir = str(config.projectsDir) ?? str(process.env.WORKSTATION_PROJECTS_DIR) ?? '/var/lib/workstation/projects'
+  const sessionsDir = join(dshHome, 'sessions')
   const provisionScript = str(config.provisionScript) ?? '/opt/omni/services/workstation/provision-role.sh'
   const defaultRole = str(config.defaultRole) ?? 'websearcher'
   const timeoutSecs = Math.min(Math.max(int(config.timeoutSecs) ?? 900, 30), 7200)
@@ -253,9 +268,15 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     const task = options.template === undefined
       ? objective
       : `Your briefing is the file ${options.template} - read it first with the fs tool and follow it. Objective: ${objective}`
-    const header = `[delegated by ${toolName} role=${role} project=${project} depth=${depth + 1}]`
+    // The unique `call=<token>` marker lets this plugin locate the CHILD's own
+    // session after the run: a child that delegates creates grandchild sessions
+    // in the SAME project bucket, so only the marker tells them apart.
+    const marker = usageMarker(usageToken())
+    const header = `[delegated by ${toolName} role=${role} project=${project} depth=${depth + 1} ${marker}]`
     const briefing = `${header}\n\n${task}`
 
+    const bucket = projectKey(workspace)
+    const before = listSessionIds(sessionsDir, bucket)
     const started = Date.now()
     const result = await run('node', [bin, role, briefing], {
       cwd: workspace,
@@ -267,6 +288,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     const durationSecs = Math.round((Date.now() - started) / 1000)
     // Non-JSON headless mode: stdout IS the final answer (verified), stderr is the log.
     const answer = result.stdout.trim()
+
+    // USAGE (the child's own tokens), in call order, last = child aggregate.
+    const usageReport = collectUsage({ sessionsDir, bucket, before, marker, agent: role })
 
     return {
       tool: toolName,
@@ -289,6 +313,14 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       command: `node ${bin} ${role} "<briefing>" (cwd ${workspace})`,
       provisioningNotes: notes,
       ...(answer.length === 0 ? { stderrTail: tail(result.stderr, maxOutputChars) } : { stderrTail: tail(result.stderr, 2000) }),
+      // ADDITIVE accounting block, never mixed into the fields above: returned
+      // to the caller and, for a nested call, persisted on the `tool/result`
+      // event so the parent agent splices it at the call point.
+      _meta: {
+        usage: usageReport.usage,
+        ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
+        ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),
+      },
     }
   }
 
@@ -315,7 +347,16 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             ...(timeoutFor === undefined ? {} : {}),
           })
         },
-        output: { schema: {}, render: renderValue },
+        output: {
+          schema: {},
+          render: renderPublicResult,
+          // Persist `_meta` as `data.meta` on the `tool/result` event (NOT model
+          // content) so the parent agent splices the child usage array.
+          presentationMeta: (_args, value) => {
+            const meta = value !== null && typeof value === 'object' ? (value as { _meta?: unknown })._meta : undefined
+            return { _meta: meta ?? { usage: [] } }
+          },
+        },
       })),
     )
   }

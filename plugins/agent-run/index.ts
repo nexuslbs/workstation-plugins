@@ -54,7 +54,8 @@ import { spawn } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
+import { collectUsage } from '../../shared/usage.ts'
 import {
   attachSessionIds,
   ensureWorkspace,
@@ -139,6 +140,20 @@ function int(value: unknown): number | undefined {
 function tail(text: string, limit: number): string {
   if (text.length <= limit) return text
   return `[...${text.length - limit} chars elided...]\n${text.slice(text.length - limit)}`
+}
+
+/**
+ * Render the NORMAL result for the model, WITHOUT the additive `_meta` block.
+ * `_meta.usage` is accounting data for the CALLER (the HTTP facade and a parent
+ * agent reading the session log), never model-facing content: the harness
+ * persists it separately through `output.presentationMeta`.
+ */
+function renderPublicResult(args: unknown, value: unknown): ContentBlock[] {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const { _meta: _ignored, ...rest } = value as Record<string, unknown>
+    return renderValue(args, rest)
+  }
+  return renderValue(args, value)
 }
 
 /** A project name is ONE path segment: lowercase, short, no traversal. */
@@ -425,6 +440,19 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         const durationSecs = Math.round((Date.now() - started) / 1000)
         const created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
 
+        // USAGE (the child's own tokens). The `sessionHeader` is the unique
+        // marker in the worker's first prompt: a worker that delegates creates
+        // GRANDCHILD sessions in the same bucket, so the marker is what tells
+        // the direct worker apart from its own descendants. The array is in
+        // call order and ends with the worker's own aggregate.
+        const usageReport = collectUsage({
+          sessionsDir,
+          bucket,
+          before,
+          marker: sessionHeader,
+          agent: role,
+        })
+
         // AUTO-REGISTER (best effort): the worker is a SEPARATE CLI process, so
         // NO session-created event fires in this process; the bucket diff is
         // what yields the created `session-<uuid>` directory names, and those
@@ -493,9 +521,26 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           },
           stdoutTail: tail(result.stdout, maxOutputChars),
           stderrTail: tail(result.stderr, maxOutputChars),
+          // ADDITIVE accounting block, never mixed into the fields above: the
+          // HTTP facade returns it to the orchestrator and a parent agent reads
+          // it from the session log. `usage` is in call order, last = aggregate.
+          _meta: {
+            usage: usageReport.usage,
+            ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
+            ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),
+          },
         }
       },
-      output: { schema: {}, render: renderValue },
+      output: {
+        schema: {},
+        render: renderPublicResult,
+        // Persist `_meta` as `data.meta` on the `tool/result` event (NOT model
+        // content) so the parent agent can splice the child usage array.
+        presentationMeta: (_args, value) => {
+          const meta = value !== null && typeof value === 'object' ? (value as { _meta?: unknown })._meta : undefined
+          return { _meta: meta ?? { usage: [] } }
+        },
+      },
     })),
   )
 }

@@ -301,6 +301,13 @@ export interface ToolDefinition {
     schema: ValueSchemaSpec
     /** Pure projection from validated args + value to content blocks. */
     render(args: unknown, value: unknown): ContentBlock[]
+    /**
+     * Optional tool-private presentation payload persisted on the `tool/result`
+     * event (`data.meta`) and NEVER shown to the model. The agent-calling tools
+     * project their `_meta.usage` array here so a parent agent can splice it
+     * without the usage bloating the model-visible content.
+     */
+    presentationMeta?(args: unknown, value: unknown): unknown
   }
   /** Runs the tool with validated parameters and returns its canonical value. */
   execute(args: Record<string, unknown>, exec?: unknown): unknown | Promise<unknown>
@@ -317,7 +324,7 @@ export function defineTool(options: {
   name: string
   description: string
   parameters: ParameterSchemaSpec
-  output: { schema: ValueSchemaSpec; render(args: unknown, value: unknown): ContentBlock[] }
+  output: { schema: ValueSchemaSpec; render(args: unknown, value: unknown): ContentBlock[]; presentationMeta?(args: unknown, value: unknown): unknown }
   execute(args: Record<string, unknown>, exec?: unknown): unknown | Promise<unknown>
 }): ToolDefinition {
   const name = typeof options.name === 'string' ? options.name.trim() : ''
@@ -327,6 +334,9 @@ export function defineTool(options: {
   if (options.output === null || typeof options.output !== 'object' || typeof options.output.render !== 'function') {
     throw new Error(`defineTool('${name}'): 'output' must declare { schema, render }`)
   }
+  if (options.output.presentationMeta !== undefined && typeof options.output.presentationMeta !== 'function') {
+    throw new Error(`defineTool('${name}'): 'output.presentationMeta' must be a function when present`)
+  }
   return {
     name,
     description: options.description,
@@ -334,6 +344,9 @@ export function defineTool(options: {
     output: {
       schema: options.output.schema,
       render: (args: unknown, value: unknown): ContentBlock[] => options.output.render(args, value),
+      ...(options.output.presentationMeta === undefined
+        ? {}
+        : { presentationMeta: (args: unknown, value: unknown): unknown => options.output.presentationMeta?.(args, value) }),
     },
     execute: async (args: Record<string, unknown>, exec?: unknown): Promise<unknown> => {
       const violations = validateArgs(options.parameters, args)
