@@ -121,6 +121,19 @@ interface RunResult {
   stdout: string
   stderr: string
   timedOut: boolean
+  /** The caller cancelled this run (client disconnect): the child was killed. */
+  aborted: boolean
+}
+
+/**
+ * The caller cancellation signal of a harness tool call, when the harness
+ * supplies one (`exec.signal`). Duck-typed: the plugin must stay usable on a
+ * bare delegation plane whose execution context carries no signal.
+ */
+function abortSignalOf(exec: unknown): AbortSignal | undefined {
+  const candidate = (exec as { signal?: unknown } | undefined)?.signal as AbortSignal | undefined
+  if (candidate === undefined || candidate === null) return undefined
+  return typeof (candidate as { addEventListener?: unknown }).addEventListener === 'function' ? candidate : undefined
 }
 
 function str(value: unknown): string | undefined {
@@ -164,17 +177,41 @@ function sanitizeProject(raw: string | undefined): string {
   return cleaned.length === 0 ? 'default' : cleaned.slice(0, 48)
 }
 
-/** Run one command to completion, capturing both streams (never rejecting on a non-zero exit). */
-function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<RunResult> {
+/**
+ * Run one command to completion, capturing both streams (never rejecting on a
+ * non-zero exit).
+ *
+ * `signal` is the CALLER cancellation signal (`exec.signal`): when it aborts -
+ * the HTTP client that dispatched this run went away, i.e. the omniagent
+ * stopped the thread - the spawned dsh agent is SIGKILLed so it stops spending
+ * tokens instead of running on with no consumer left.
+ */
+function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    let aborted = false
     const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGKILL')
     }, options.timeoutMs)
+    const signal = options.signal
+    const onAbort = (): void => {
+      if (aborted) return
+      aborted = true
+      stderr += `\n[cancelled: the calling client disconnected; killing ${command} pid ${String(child.pid)}]`
+      child.kill('SIGKILL')
+    }
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      if (signal !== undefined) signal.removeEventListener('abort', onAbort)
+    }
+    if (signal !== undefined) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
@@ -182,12 +219,12 @@ function run(command: string, args: string[], options: { cwd: string; env: NodeJ
       stderr += chunk.toString('utf8')
     })
     child.on('error', (error: Error) => {
-      clearTimeout(timer)
-      resolve({ code: null, signal: null, stdout, stderr: `${stderr}${error.message}`, timedOut })
+      cleanup()
+      resolve({ code: null, signal: null, stdout, stderr: `${stderr}${error.message}`, timedOut, aborted })
     })
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      clearTimeout(timer)
-      resolve({ code, signal, stdout, stderr, timedOut })
+      cleanup()
+      resolve({ code, signal, stdout, stderr, timedOut, aborted })
     })
   })
 }
@@ -256,7 +293,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     toolName: string,
     role: string,
     objective: string,
-    options: { template?: string; project?: string; timeoutSecs?: number },
+    options: { template?: string; project?: string; timeoutSecs?: number; signal?: AbortSignal },
   ): Promise<Record<string, unknown>> => {
     const bound = Math.min(Math.max(options.timeoutSecs ?? timeoutSecs, 30), 7200)
     const notes = await ensureProfile(role)
@@ -284,6 +321,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       // is incremented, so the child's own delegation budget is bounded.
       env: { ...process.env, DSH_HOME: dshHome, DSH_DELEGATE_DEPTH: String(depth + 1) },
       timeoutMs: bound * 1000,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     })
     const durationSecs = Math.round((Date.now() - started) / 1000)
     // Non-JSON headless mode: stdout IS the final answer (verified), stderr is the log.
@@ -301,6 +339,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       ...(options.template === undefined ? {} : { template: options.template }),
       exitCode: result.code,
       timedOut: result.timedOut,
+      aborted: result.aborted,
       durationSecs,
       modelRoute: 'the delegated role profile resolves its own route (see the role PROFILE.md)',
       // Empty stdout with a non-zero exit is a FAILED delegation, never an empty
@@ -330,13 +369,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     required: true,
   }
 
-  const register = (toolName: string, description: string, parameters: ToolParameters, call: (params: Record<string, unknown>) => Promise<Record<string, unknown>>, timeoutFor: DelegateRole | undefined): void => {
+  const register = (toolName: string, description: string, parameters: ToolParameters, call: (params: Record<string, unknown>, exec?: unknown) => Promise<Record<string, unknown>>, timeoutFor: DelegateRole | undefined): void => {
     ctx.effect(() =>
       ctx.tools.register(defineTool({
         name: toolName,
         description,
         parameters,
-        execute: async (params) => {
+        execute: async (params, exec) => {
           const objective = str(params.objective)
           if (objective === undefined) throw new Error(`${toolName}: the 'objective' parameter must be a non-empty task statement`)
           const requestedTimeout = int(params.timeoutSecs)
@@ -345,7 +384,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             ...(str(params.project) === undefined ? {} : { project: str(params.project) }),
             ...(requestedTimeout === undefined ? {} : { timeoutSecs: requestedTimeout }),
             ...(timeoutFor === undefined ? {} : {}),
-          })
+          }, exec)
         },
         output: {
           schema: {},
@@ -379,10 +418,11 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         },
         timeoutSecs: { type: 'integer', description: `wall-clock bound of this ONE delegated run in seconds (default ${int(entry.timeoutSecs) ?? timeoutSecs})` },
       },
-      async (params) => await delegate(toolName, role, String(params.objective), {
+      async (params, exec) => await delegate(toolName, role, String(params.objective), {
         ...(template === undefined ? {} : { template }),
         project: fixedProject ?? (str(params.project) as string | undefined),
         timeoutSecs: int(params.timeoutSecs) ?? int(entry.timeoutSecs),
+        ...(abortSignalOf(exec) === undefined ? {} : { signal: abortSignalOf(exec) as AbortSignal }),
       }),
       entry,
     )
@@ -398,12 +438,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         project: { type: 'string', description: 'the PROJECT (dsh session bucket) of the delegated run (default: the caller\'s own project)' },
         timeoutSecs: { type: 'integer', description: `wall-clock bound of this ONE delegated run in seconds (default ${timeoutSecs})` },
       },
-      async (params) => {
+      async (params, exec) => {
         const role = str(params.role) ?? defaultRole
         const toolName = `${genericTool}:${role}`
         return await delegate(toolName, role, String(params.objective), {
           project: str(params.project),
           timeoutSecs: int(params.timeoutSecs),
+          ...(abortSignalOf(exec) === undefined ? {} : { signal: abortSignalOf(exec) as AbortSignal }),
         })
       },
       undefined,

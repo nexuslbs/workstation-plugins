@@ -120,6 +120,19 @@ interface RunResult {
   stdout: string
   stderr: string
   timedOut: boolean
+  /** The caller cancelled this run (client disconnect): the child was killed. */
+  aborted: boolean
+}
+
+/**
+ * The caller cancellation signal of a harness tool call, when the harness
+ * supplies one (`exec.signal`). Duck-typed: the plugin must stay usable on a
+ * bare delegation plane whose execution context carries no signal.
+ */
+function abortSignalOf(exec: unknown): AbortSignal | undefined {
+  const candidate = (exec as { signal?: unknown } | undefined)?.signal as AbortSignal | undefined
+  if (candidate === undefined || candidate === null) return undefined
+  return typeof (candidate as { addEventListener?: unknown }).addEventListener === 'function' ? candidate : undefined
 }
 
 /** Trim a string, or `undefined`. */
@@ -203,17 +216,41 @@ function listSessions(sessionsDir: string, bucket: string): Set<string> {
   }
 }
 
-/** Run one command to completion, capturing both streams (never rejecting on a non-zero exit). */
-function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<RunResult> {
+/**
+ * Run one command to completion, capturing both streams (never rejecting on a
+ * non-zero exit).
+ *
+ * `signal` is the CALLER cancellation signal (`exec.signal`): when it aborts -
+ * the HTTP client that dispatched this worker went away, i.e. the omniagent
+ * stopped the thread - the spawned dsh worker is SIGKILLed so it stops spending
+ * tokens instead of running on with no consumer left.
+ */
+function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    let aborted = false
     const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGKILL')
     }, options.timeoutMs)
+    const signal = options.signal
+    const onAbort = (): void => {
+      if (aborted) return
+      aborted = true
+      stderr += `\n[cancelled: the calling client disconnected; killing ${command} pid ${String(child.pid)}]`
+      child.kill('SIGKILL')
+    }
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      if (signal !== undefined) signal.removeEventListener('abort', onAbort)
+    }
+    if (signal !== undefined) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
@@ -221,12 +258,12 @@ function run(command: string, args: string[], options: { cwd: string; env: NodeJ
       stderr += chunk.toString('utf8')
     })
     child.on('error', (error: Error) => {
-      clearTimeout(timer)
-      resolve({ code: null, signal: null, stdout, stderr: `${stderr}${error.message}`, timedOut })
+      cleanup()
+      resolve({ code: null, signal: null, stdout, stderr: `${stderr}${error.message}`, timedOut, aborted })
     })
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      clearTimeout(timer)
-      resolve({ code, signal, stdout, stderr, timedOut })
+      cleanup()
+      resolve({ code, signal, stdout, stderr, timedOut, aborted })
     })
   })
 }
@@ -379,7 +416,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           description: `wall-clock bound of this ONE worker run in seconds (default ${timeoutSecs})`,
         },
       },
-      execute: async (params) => {
+      execute: async (params, exec) => {
         const objective = str(params.objective)
         if (objective === undefined) throw new Error("agent_run: the 'objective' parameter must be a non-empty task statement")
         const role = str(params.role) ?? defaultRole
@@ -436,6 +473,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           cwd: workspace,
           env: { ...process.env, DSH_HOME: dshHome },
           timeoutMs: bound * 1000,
+          ...(abortSignalOf(exec) === undefined ? {} : { signal: abortSignalOf(exec) as AbortSignal }),
         })
         const durationSecs = Math.round((Date.now() - started) / 1000)
         const created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
@@ -491,6 +529,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             durationSecs,
             exitCode: result.code,
             timedOut: result.timedOut,
+            aborted: result.aborted,
             sessions: created,
           })}\n`, 'utf8')
         } catch {
@@ -511,6 +550,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           command: `node ${bin} ${role} "<briefing>" (cwd ${workspace} -> session bucket ${bucket})`,
           exitCode: result.code,
           timedOut: result.timedOut,
+          aborted: result.aborted,
           durationSecs,
           provisioningNotes: provisioning.notes,
           workspaceRegistration: {
