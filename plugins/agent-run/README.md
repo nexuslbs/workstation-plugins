@@ -75,6 +75,28 @@ MEASURED CAVEAT (`--session-id`): the harness CLI's `--session-id` only RESUMES 
 structured id is therefore carried by the project bucket + the first prompt + the dispatch record,
 never by `--session-id`.
 
+### Dispatch record `dsh-sessions.jsonl`
+
+Every dispatch appends ONE JSON line to `<projectsDir>/<project>/dsh-sessions.jsonl` in a `finally`,
+so the accounting survives a crash, a timeout or a non-zero exit: a throw between dispatch start and
+the write (objective validation, role provisioning, workspace `mkdir`) would otherwise lose the
+record. The line keeps the original identity fields and adds the accounting:
+
+| field | meaning |
+|---|---|
+| `sessionId` | the structured `<role>-<project>-<timestamp>-<suffix>` id |
+| `role`, `project`, `workspace`, `bucket` | the dispatch identity and the dsh session bucket |
+| `startedAt`, `durationSecs` | UTC stamp and wall-clock seconds of the run (elapsed when the dispatch threw) |
+| `exitCode`, `timedOut`, `aborted` | the worker process outcome (`exitCode: null` when the dispatch threw before the run) |
+| `sessions` | the created `session-<uuid>` directory names (the bucket diff) |
+| `usage` | the child's per-call usage array with its own aggregate LAST; `[]` when the log could not be read |
+| `usage_error` | why the usage scan found no readable child log (omitted when usage was read) |
+| `usage_session_log` | the child session log the scan read (omitted when none was found) |
+| `error` | the RAW thrown error (message plus stack head) when the dispatch crashed, else the worker's stderr tail on a non-zero exit / timeout / abort (omitted on a clean run) |
+
+The record is written BEST EFFORT: it never replaces or masks the dispatch outcome. The additive
+`_meta` block returned to the caller is unchanged and never becomes model-facing content.
+
 ## Parameters
 
 | name | type | required | meaning |

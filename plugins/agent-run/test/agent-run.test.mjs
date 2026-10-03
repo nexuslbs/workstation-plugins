@@ -34,6 +34,7 @@ import { apply, name } from '../index.ts'
 const FAKE_CLI = `#!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 
 const role = process.argv[2]
 const rest = process.argv.slice(3)
@@ -65,12 +66,22 @@ if (process.env.FAKE_WORKER_FAIL === '1') {
   process.exit(1)
 }
 // Emulate the real session-persistence-jsonl layout: one session directory under
-// the PROJECT bucket of the process cwd (--<normalized-cwd>--/session-<uuid>/).
+// the PROJECT bucket of the process cwd (--<normalized-cwd>--/session-<uuid>/),
+// carrying a REAL v4 log (one concatenated zstd frame). The marker in the first
+// user message identifies the direct child, and one assistant/message gives it
+// usage, which is what the dispatch record's usage array is derived from.
 const bucket = '--' + process.cwd().replace(/^[\\/]+/, '').replace(/[\\/]+/g, '-') + '--'
-const sessionDir = join(home, 'sessions', bucket, 'session-' + Math.random().toString(16).slice(2, 10))
+const briefing = process.argv[3] ?? ''
+const sessionId = 'session-' + Math.random().toString(16).slice(2, 10)
+const sessionDir = join(home, 'sessions', bucket, sessionId)
 mkdirSync(sessionDir, { recursive: true })
-writeFileSync(join(sessionDir, 'session.v4.jsonl.zstd'), '')
-console.log(JSON.stringify({ role, answer: 'ok', cwd: process.cwd(), briefing: process.argv[3], bucket, sessionDir }))
+const events = [
+  { type: 'session', id: sessionId, createdAt: Date.now(), cwd: process.cwd(), delegationDepth: 1 },
+  { type: 'user/message', data: { content: [{ type: 'text', text: briefing }] } },
+  { type: 'assistant/message', seq: 1, data: { usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 150 }, message: { id: 'msg-1', source: { provider: 'deepseek-official', model: 'deepseek-chat' } } } },
+]
+writeFileSync(join(sessionDir, 'session.v4.jsonl.zstd'), zstdCompressSync(Buffer.from(events.map((event) => JSON.stringify(event)).join('\\n') + '\\n', 'utf8')))
+console.log(JSON.stringify({ role, answer: 'ok', cwd: process.cwd(), briefing, bucket, sessionDir }))
 process.exit(0)
 `
 
@@ -195,6 +206,16 @@ test('a dispatch runs the worker in its PROJECT workspace and records the struct
     const record = JSON.parse(readFileSync(join(workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
     assert.equal(record.sessionId, result.sessionId)
     assert.deepEqual(record.sessions, [payload.sessionDir.split('/').pop()])
+
+    // 4. the record now carries the child's usage array (per-call + aggregate)
+    assert.ok(Array.isArray(record.usage), `usage must be an array: ${JSON.stringify(record.usage)}`)
+    assert.ok(
+      record.usage.some((entry) => entry?.details?.kind === 'agent-aggregate'),
+      `usage must contain the child's own aggregate: ${JSON.stringify(record.usage)}`,
+    )
+    assert.equal(record.usage.at(-1).details.kind, 'agent-aggregate', 'the aggregate must be LAST')
+    assert.equal(record.usage.at(-1).agent, 'developer')
+    assert.equal('error' in record, false, 'a clean run omits the error field')
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }
@@ -394,6 +415,55 @@ test('a worker that dies at the model is returned with its exit code, not swallo
       assert.equal(result.exitCode, 1)
       assert.match(result.stderrTail, /MISSING_CREDENTIAL/)
     })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a FAILED dispatch still records its exit code, raw error and usage array', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    await withEnv({ FAKE_CLI_CALLS: fix.calls, FAKE_WORKER_FAIL: '1' }, async () => {
+      const result = await tool.execute({ role: 'developer', project: 'failed-x', objective: 'say ok' })
+      assert.equal(result.exitCode, 1)
+
+      // The record is the accounting the caller (and the ledger) reads even when
+      // the dispatch itself failed: parse the LAST jsonl line.
+      const workspace = join(fix.projectsDir, 'failed-x')
+      const record = JSON.parse(readFileSync(join(workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+      assert.equal(record.sessionId, result.sessionId)
+      assert.notEqual(record.exitCode, 0, `exitCode must be non-zero: ${JSON.stringify(record)}`)
+      assert.ok(Array.isArray(record.usage), `usage must always be an array: ${JSON.stringify(record.usage)}`)
+      // The RAW failure marker survives in the record, never only in the answer.
+      assert.match(String(record.error ?? record.usage_error ?? ''), /MISSING_CREDENTIAL/)
+      assert.match(String(record.error ?? ''), /no API key for provider route/)
+      assert.equal(record.timedOut, false)
+      assert.equal(record.aborted, false)
+    })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a dispatch that throws BEFORE the run still writes its record with the raw error', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    // The role cannot be provisioned: ensureRole() runs, the manifest stays
+    // absent, and the boundary throws before any worker run.
+    await withEnv({ FAKE_CLI_CALLS: fix.calls, FAKE_INIT_MANIFEST: 'no' }, async () => {
+      await assert.rejects(
+        () => tool.execute({ role: 'ghost-role', project: 'throw-x', objective: 'say ok' }),
+        /could not be provisioned/,
+      )
+    })
+    const workspace = join(fix.projectsDir, 'throw-x')
+    const record = JSON.parse(readFileSync(join(workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.equal(record.exitCode, null)
+    assert.ok(Array.isArray(record.usage), `usage must be an array: ${JSON.stringify(record.usage)}`)
+    assert.match(String(record.error ?? ''), /could not be provisioned/)
+    assert.match(String(record.usage_error ?? ''), /threw before the usage scan/)
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }

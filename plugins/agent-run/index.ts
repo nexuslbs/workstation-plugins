@@ -49,13 +49,25 @@
 // text is indexed by the FTS session-query backend), into the answer, and into a
 // per-project `dsh-sessions.jsonl` dispatch record that maps the structured id to
 // the real session directory the run created (discoverability, retention, search).
+//
+// DISPATCH RECORD (accounting, crash-safe). The per-project
+// `<projectsDir>/<project>/dsh-sessions.jsonl` line maps the structured id to the
+// real session directory AND carries the run's accounting: `usage` (the child's
+// per-call array with its own aggregate LAST, `[]` when the log could not be
+// read), `usage_error` (why the scan found nothing) and `usage_session_log` (the
+// log the scan read) when present, and `error` (the RAW thrown error when the
+// dispatch crashed, else the worker's stderr tail on a non-zero exit / timeout /
+// abort). The record is written in a `finally`, so a throw between dispatch start
+// and the write (objective validation, role provisioning, workspace mkdir) still
+// leaves its accounting behind. The additive `_meta` block returned to the caller
+// is unchanged and never becomes model-facing content.
 
 import { spawn } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
-import { collectUsage } from '../../shared/usage.ts'
+import { collectUsage, type UsageReport } from '../../shared/usage.ts'
 import {
   attachSessionIds,
   ensureWorkspace,
@@ -417,158 +429,214 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         },
       },
       execute: async (params, exec) => {
-        const objective = str(params.objective)
-        if (objective === undefined) throw new Error("agent_run: the 'objective' parameter must be a non-empty task statement")
+        // Parsing runs BEFORE the boundary so the record has role/project even
+        // when the objective itself is the throw: a refused dispatch is still
+        // an observable dispatch.
         const role = str(params.role) ?? defaultRole
         const template = str(params.template)
         const project = sanitizeProject(str(params.project))
         const advisoryWorkdir = str(params.workdir)
         const bound = Math.min(Math.max(int(params.timeoutSecs) ?? timeoutSecs, 30), 7200)
 
-        const provisioning = await ensureRole(role)
-        if (!existsSync(join(dshHome, 'profiles', role, 'package.json'))) {
-          throw new Error(`agent_run: role '${role}' could not be provisioned (no profile at ${join(dshHome, 'profiles', role)})`)
+        // Everything the dispatch record needs is declared OUTSIDE the boundary
+        // so the `finally` can write the record even when the boundary throws
+        // before the run (objective validation, provisioning, mkdir). `usage` is
+        // initialized to `[]` with an error note, so a throw before the usage
+        // scan still leaves a well-formed record.
+        let objective = ''
+        let started = Date.now()
+        let result: RunResult | undefined
+        let created: string[] = []
+        let durationSecs = 0
+        let failure: string | undefined
+        let usageReport: UsageReport = {
+          usage: [],
+          error: 'usage not collected: the dispatch threw before the usage scan',
         }
-
-        // The PROJECT workspace is the worker's cwd => the dsh session project
-        // bucket. Created on demand (the first dispatch of a project makes it).
-        const workspace = join(projectsDir, project)
-        mkdirSync(workspace, { recursive: true })
-
-        // AUTO-REGISTER (best effort): ensure the PROJECT's Workspace exists
-        // BEFORE the run, so the session this dispatch creates has a group to
-        // land in. `create()` is idempotent and the registry lives in THIS
-        // process (pid=1), which is the only process that can write it.
-        const registrationNotes: string[] = []
-        let projectWorkspace: WorkspaceLike | undefined
-        if (workspaceRegistry !== undefined) {
-          try {
-            projectWorkspace = await ensureWorkspace(workspaceRegistry, workspace, project)
-            registrationNotes.push(`workspace ensured before run: ${projectWorkspace.path} (id ${String(projectWorkspace.id)})`)
-          } catch (error) {
-            registrationNotes.push(`workspace NOT ensured before run: ${error instanceof Error ? error.message : String(error)}`)
-          }
-        } else {
-          registrationNotes.push('workspace registry not exposed in this process; pre-run registration skipped')
-        }
-
-        const sessionId = `${role}-${project}-${stamp(Date.now())}-${randomSuffix()}`
+        const sessionId = `${role}-${project}-${stamp(started)}-${randomSuffix()}`
         const sessionHeader = `[dsh-session role=${role} project=${project} id=${sessionId}]`
-        const task = template === undefined
-          ? objective
-          : `Your briefing is the file ${template} - read it first with the fs tool and follow it. Objective: ${objective}`
-        // The structured id leads the FIRST prompt: the LLM session title is derived
-        // from that prompt and the prompt text is indexed by the FTS session-query
-        // backend, so role+project+id are readable in the title AND searchable.
-        const briefing = `${sessionHeader}\n\n${task}`
-
+        // The PROJECT workspace is the worker's cwd => the dsh session project
+        // bucket. Resolved here (not inside the boundary) so the `finally` record
+        // write always has a target directory to (re)create.
+        const workspace = join(projectsDir, project)
         const bucket = projectBucket(workspace)
-        const before = listSessions(sessionsDir, bucket)
-        const started = Date.now()
-        // DSH_HOME is handed to the worker EXPLICITLY: the harness home (role
-        // profiles, credentials, session store) must never depend on ambient
-        // environment, and the session store this tool diffs afterwards lives
-        // under exactly this home.
-        const result = await run('node', [bin, role, briefing], {
-          cwd: workspace,
-          env: { ...process.env, DSH_HOME: dshHome },
-          timeoutMs: bound * 1000,
-          ...(abortSignalOf(exec) === undefined ? {} : { signal: abortSignalOf(exec) as AbortSignal }),
-        })
-        const durationSecs = Math.round((Date.now() - started) / 1000)
-        const created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
 
-        // USAGE (the child's own tokens). The `sessionHeader` is the unique
-        // marker in the worker's first prompt: a worker that delegates creates
-        // GRANDCHILD sessions in the same bucket, so the marker is what tells
-        // the direct worker apart from its own descendants. The array is in
-        // call order and ends with the worker's own aggregate.
-        const usageReport = collectUsage({
-          sessionsDir,
-          bucket,
-          before,
-          marker: sessionHeader,
-          agent: role,
-        })
-
-        // AUTO-REGISTER (best effort): the worker is a SEPARATE CLI process, so
-        // NO session-created event fires in this process; the bucket diff is
-        // what yields the created `session-<uuid>` directory names, and those
-        // names ARE the dsh session ids. `attachSession()` re-validates the
-        // stored header cwd against the workspace path here in pid=1, which
-        // also indexes the new header for the registry's membership getter.
-        const attachedSessionIds: string[] = []
-        if (workspaceRegistry !== undefined && created.length > 0) {
-          try {
-            projectWorkspace ??= await ensureWorkspace(workspaceRegistry, workspace, project)
-            const outcome = await attachSessionIds(projectWorkspace, created)
-            attachedSessionIds.push(...outcome.attached)
-            registrationNotes.push(
-              `attached ${outcome.attached.length} of ${created.length} created session(s) to workspace ${String(projectWorkspace.id)}`,
-            )
-            for (const skip of outcome.skipped) {
-              registrationNotes.push(`session ${skip.sessionId} NOT attached: ${skip.reason}`)
-            }
-          } catch (error) {
-            registrationNotes.push(`session attach failed: ${error instanceof Error ? error.message : String(error)}`)
-          }
-        }
-
-        // The dispatch record maps the STRUCTURED id to the dsh session directory
-        // the run really created: dsh names the directory session-<uuid>, so this
-        // is the only place both identities meet (discoverability, retention,
-        // archive). Best effort: never fail a worker run over the index.
         try {
-          appendFileSync(join(workspace, 'dsh-sessions.jsonl'), `${JSON.stringify({
-            sessionId,
+          objective = str(params.objective) ?? ''
+          if (objective.length === 0) {
+            throw new Error("agent_run: the 'objective' parameter must be a non-empty task statement")
+          }
+
+          const provisioning = await ensureRole(role)
+          if (!existsSync(join(dshHome, 'profiles', role, 'package.json'))) {
+            throw new Error(`agent_run: role '${role}' could not be provisioned (no profile at ${join(dshHome, 'profiles', role)})`)
+          }
+
+          // The PROJECT workspace is created on demand (the first dispatch of a
+          // project makes it).
+          mkdirSync(workspace, { recursive: true })
+
+          // AUTO-REGISTER (best effort): ensure the PROJECT's Workspace exists
+          // BEFORE the run, so the session this dispatch creates has a group to
+          // land in. `create()` is idempotent and the registry lives in THIS
+          // process (pid=1), which is the only process that can write it.
+          const registrationNotes: string[] = []
+          let projectWorkspace: WorkspaceLike | undefined
+          if (workspaceRegistry !== undefined) {
+            try {
+              projectWorkspace = await ensureWorkspace(workspaceRegistry, workspace, project)
+              registrationNotes.push(`workspace ensured before run: ${projectWorkspace.path} (id ${String(projectWorkspace.id)})`)
+            } catch (error) {
+              registrationNotes.push(`workspace NOT ensured before run: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          } else {
+            registrationNotes.push('workspace registry not exposed in this process; pre-run registration skipped')
+          }
+
+          const task = template === undefined
+            ? objective
+            : `Your briefing is the file ${template} - read it first with the fs tool and follow it. Objective: ${objective}`
+          // The structured id leads the FIRST prompt: the LLM session title is
+          // derived from that prompt and the prompt text is indexed by the FTS
+          // session-query backend, so role+project+id are readable in the title
+          // AND searchable.
+          const briefing = `${sessionHeader}\n\n${task}`
+
+          const before = listSessions(sessionsDir, bucket)
+          started = Date.now()
+          // DSH_HOME is handed to the worker EXPLICITLY: the harness home (role
+          // profiles, credentials, session store) must never depend on ambient
+          // environment, and the session store this tool diffs afterwards lives
+          // under exactly this home.
+          const runOutput = await run('node', [bin, role, briefing], {
+            cwd: workspace,
+            env: { ...process.env, DSH_HOME: dshHome },
+            timeoutMs: bound * 1000,
+            ...(abortSignalOf(exec) === undefined ? {} : { signal: abortSignalOf(exec) as AbortSignal }),
+          })
+          result = runOutput
+          durationSecs = Math.round((Date.now() - started) / 1000)
+          created = [...listSessions(sessionsDir, bucket)].filter((id) => !before.has(id)).sort()
+
+          // USAGE (the child's own tokens). The `sessionHeader` is the unique
+          // marker in the worker's first prompt: a worker that delegates creates
+          // GRANDCHILD sessions in the same bucket, so the marker is what tells
+          // the direct worker apart from its own descendants. The array is in
+          // call order and ends with the worker's own aggregate. collectUsage
+          // never throws, but the call is guarded anyway so an unreadable store
+          // can never cost the dispatch its record.
+          try {
+            usageReport = collectUsage({
+              sessionsDir,
+              bucket,
+              before,
+              marker: sessionHeader,
+              agent: role,
+            })
+          } catch (error) {
+            usageReport = {
+              usage: [],
+              error: `usage collection failed: ${error instanceof Error ? error.message : String(error)}`,
+            }
+          }
+
+          // AUTO-REGISTER (best effort): the worker is a SEPARATE CLI process, so
+          // NO session-created event fires in this process; the bucket diff is
+          // what yields the created `session-<uuid>` directory names, and those
+          // names ARE the dsh session ids. `attachSession()` re-validates the
+          // stored header cwd against the workspace path here in pid=1, which
+          // also indexes the new header for the registry's membership getter.
+          const attachedSessionIds: string[] = []
+          if (workspaceRegistry !== undefined && created.length > 0) {
+            try {
+              projectWorkspace ??= await ensureWorkspace(workspaceRegistry, workspace, project)
+              const outcome = await attachSessionIds(projectWorkspace, created)
+              attachedSessionIds.push(...outcome.attached)
+              registrationNotes.push(
+                `attached ${outcome.attached.length} of ${created.length} created session(s) to workspace ${String(projectWorkspace.id)}`,
+              )
+              for (const skip of outcome.skipped) {
+                registrationNotes.push(`session ${skip.sessionId} NOT attached: ${skip.reason}`)
+              }
+            } catch (error) {
+              registrationNotes.push(`session attach failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
+
+          return {
             role,
             project,
+            sessionId,
             workspace,
-            bucket,
-            startedAt: new Date(started).toISOString(),
+            sessionBucket: bucket,
+            sessionDir: created.length === 1 ? join(sessionsDir, bucket, created[0]) : null,
+            sessionDirs: created.map((id) => join(sessionsDir, bucket, id)),
+            objective,
+            ...(template === undefined ? {} : { template }),
+            ...(advisoryWorkdir === undefined ? {} : { requestedWorkdir: advisoryWorkdir }),
+            command: `node ${bin} ${role} "<briefing>" (cwd ${workspace} -> session bucket ${bucket})`,
+            exitCode: runOutput.code,
+            timedOut: runOutput.timedOut,
+            aborted: runOutput.aborted,
             durationSecs,
-            exitCode: result.code,
-            timedOut: result.timedOut,
-            aborted: result.aborted,
-            sessions: created,
-          })}\n`, 'utf8')
-        } catch {
-          /* best effort */
-        }
-
-        return {
-          role,
-          project,
-          sessionId,
-          workspace,
-          sessionBucket: bucket,
-          sessionDir: created.length === 1 ? join(sessionsDir, bucket, created[0]) : null,
-          sessionDirs: created.map((id) => join(sessionsDir, bucket, id)),
-          objective,
-          ...(template === undefined ? {} : { template }),
-          ...(advisoryWorkdir === undefined ? {} : { requestedWorkdir: advisoryWorkdir }),
-          command: `node ${bin} ${role} "<briefing>" (cwd ${workspace} -> session bucket ${bucket})`,
-          exitCode: result.code,
-          timedOut: result.timedOut,
-          aborted: result.aborted,
-          durationSecs,
-          provisioningNotes: provisioning.notes,
-          workspaceRegistration: {
-            workspaceId: projectWorkspace === undefined ? null : String(projectWorkspace.id),
-            workspacePath: workspace,
-            attachedSessionIds,
-            notes: registrationNotes,
-          },
-          stdoutTail: tail(result.stdout, maxOutputChars),
-          stderrTail: tail(result.stderr, maxOutputChars),
-          // ADDITIVE accounting block, never mixed into the fields above: the
-          // HTTP facade returns it to the orchestrator and a parent agent reads
-          // it from the session log. `usage` is in call order, last = aggregate.
-          _meta: {
-            usage: usageReport.usage,
-            ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
-            ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),
-          },
+            provisioningNotes: provisioning.notes,
+            workspaceRegistration: {
+              workspaceId: projectWorkspace === undefined ? null : String(projectWorkspace.id),
+              workspacePath: workspace,
+              attachedSessionIds,
+              notes: registrationNotes,
+            },
+            stdoutTail: tail(runOutput.stdout, maxOutputChars),
+            stderrTail: tail(runOutput.stderr, maxOutputChars),
+            // ADDITIVE accounting block, never mixed into the fields above: the
+            // HTTP facade returns it to the orchestrator and a parent agent reads
+            // it from the session log. `usage` is in call order, last = aggregate.
+            _meta: {
+              usage: usageReport.usage,
+              ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
+              ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),
+            },
+          }
+        } catch (error) {
+          // RAW failure (message plus the head of the stack). The SAME error is
+          // rethrown: the caller still sees the failure, and the record below
+          // keeps why it happened.
+          const thrown = error instanceof Error ? error : new Error(String(error))
+          failure = (thrown.stack ?? `${thrown.name}: ${thrown.message}`).split('\n').slice(0, 3).join('\n')
+          throw error
+        } finally {
+          // ALWAYS write the dispatch record, even for a crash: the accounting
+          // (usage plus the raw error) must survive a lost caller. Best effort:
+          // the record never replaces or masks the dispatch outcome.
+          const exitCode = result === undefined ? null : result.code
+          const timedOut = result?.timedOut ?? false
+          const aborted = result?.aborted ?? false
+          const recordDuration = result === undefined ? Math.round((Date.now() - started) / 1000) : durationSecs
+          const rawError = failure ?? (result !== undefined && ((result.code !== null && result.code !== 0) || result.timedOut || result.aborted)
+            ? tail(result.stderr, maxOutputChars)
+            : undefined)
+          try {
+            mkdirSync(workspace, { recursive: true })
+            appendFileSync(join(workspace, 'dsh-sessions.jsonl'), `${JSON.stringify({
+              sessionId,
+              role,
+              project,
+              workspace,
+              bucket,
+              startedAt: new Date(started).toISOString(),
+              durationSecs: recordDuration,
+              exitCode,
+              timedOut,
+              aborted,
+              sessions: created,
+              usage: usageReport.usage,
+              ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
+              ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),
+              ...(rawError === undefined ? {} : { error: rawError }),
+            })}\n`, 'utf8')
+          } catch {
+            /* best effort */
+          }
         }
       },
       output: {
