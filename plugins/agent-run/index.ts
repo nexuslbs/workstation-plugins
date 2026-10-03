@@ -63,8 +63,8 @@
 // is unchanged and never becomes model-facing content.
 
 import { spawn } from 'node:child_process'
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 
 import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
 import { collectUsage, type UsageReport } from '../../shared/usage.ts'
@@ -280,6 +280,121 @@ function run(command: string, args: string[], options: { cwd: string; env: NodeJ
   })
 }
 
+/**
+ * The SEVEN required `## ` sections of a dispatch briefing, per
+ * `/opt/omni/workstation/skills/ops/dispatch-briefing/SKILL.md`. The gate
+ * matches the heading at line start, case-insensitively.
+ */
+const REQUIRED_BRIEFING_SECTIONS = [
+  'Role',
+  'Template',
+  'Objective',
+  'Context',
+  'Prior session',
+  'Success evidence',
+  'Bounds',
+] as const
+
+/**
+ * The credential-VALUE patterns a briefing may never carry. A match is a
+ * rejection, and the MATCHED VALUE is never echoed into a problem string.
+ */
+const CREDENTIAL_VALUE_PATTERN = /PRIVATE KEY|ghp_|ghs_|sk-|AKIA|api_key:|password:/
+
+/**
+ * Trim the sentence punctuation a prose line leaves on a path token, but only
+ * while the raw token still does not resolve: a real `/opt/.../file.md` keeps
+ * its extension while a trailing `.`/`,`/backtick does not.
+ */
+function normalizePathToken(raw: string): string {
+  let token = raw
+  while (token.length > 5 && /[.,:;!?]+$/.test(token) && !existsSync(token)) {
+    token = token.replace(/[.,:;!?]+$/, '')
+  }
+  return token
+}
+
+/** The unique `/opt/...` path tokens a briefing names (punctuation tolerated). */
+function briefingPathTokens(text: string): string[] {
+  const matches = text.match(/\/opt\/[^\s`'"()\[\]{}<>,;]+/g) ?? []
+  const tokens = new Set<string>()
+  for (const raw of matches) tokens.add(normalizePathToken(raw))
+  return [...tokens]
+}
+
+/** The first value line under the `## Template` heading (backticks/quotes stripped). */
+function templateSectionValue(text: string): string | undefined {
+  const lines = text.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^##\s+template\b/i.test(lines[index])) continue
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const value = lines[next].trim()
+      if (value.length === 0) continue
+      if (/^##\s/.test(value)) return undefined
+      return value.replace(/^[`'"]+|[`'"]+$/g, '').trim().split(/\s+/)[0]
+    }
+    return undefined
+  }
+  return undefined
+}
+
+/**
+ * Validate a composed dispatch briefing against the DISPATCH-BRIEFING CONTRACT
+ * (`/opt/omni/workstation/skills/ops/dispatch-briefing/SKILL.md`) and return the
+ * list of problems; an EMPTY list means the briefing conforms. Pure except for
+ * the `existsSync` probes that prove the paths it names exist.
+ */
+export function validateBriefing(
+  text: string,
+  options: { template?: string; evidenceArtifact?: string } = {},
+): string[] {
+  const problems: string[] = []
+  const reportedPaths = new Set<string>()
+
+  // 1. the seven required section headings, at line start, case-insensitive.
+  for (const section of REQUIRED_BRIEFING_SECTIONS) {
+    const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (!new RegExp(`^##\\s+${escaped}\\b`, 'im').test(text)) {
+      problems.push(`missing required section: '## ${section}'`)
+    }
+  }
+
+  // 2. every /opt path token in the briefing must exist on disk.
+  for (const token of briefingPathTokens(text)) {
+    if (existsSync(token)) continue
+    reportedPaths.add(token)
+    problems.push(`briefing names a path that does not exist: ${token}`)
+  }
+
+  // 3. the '## Template' value (and the optional template parameter) must exist.
+  const declaredRaw = templateSectionValue(text)
+  const declared = declaredRaw === undefined ? undefined : normalizePathToken(declaredRaw)
+  const templateCandidate =
+    declared === undefined
+      ? undefined
+      : isAbsolute(declared)
+        ? declared
+        : options.template ?? join('/opt/omni/workstation/templates', declared)
+  if (templateCandidate !== undefined && !existsSync(templateCandidate) && !reportedPaths.has(templateCandidate)) {
+    problems.push(`the '## Template' value does not exist: ${templateCandidate}`)
+  }
+  if (options.template !== undefined && !existsSync(options.template)) {
+    problems.push(`the 'template' parameter path does not exist: ${options.template}`)
+  }
+
+  // 4. credential-VALUE scan: reject on any hit, never echo the matched value.
+  if (CREDENTIAL_VALUE_PATTERN.test(text)) {
+    problems.push('credential-value scan: a forbidden credential pattern is present (matched value redacted)')
+  }
+
+  // 5. the declared evidence artifact must literally appear in the briefing.
+  if (options.evidenceArtifact !== undefined && !text.includes(options.evidenceArtifact)) {
+    problems.push(`the evidence artifact '${options.evidenceArtifact}' does not appear in the briefing text`)
+  }
+
+  return problems
+}
+
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const harnessDir = str(config.harnessDir) ?? str(process.env.WORKSTATION_DIR) ?? '/harness'
   const dshHome = str(config.dshHome) ?? str(process.env.DSH_HOME) ?? '/var/lib/workstation'
@@ -400,7 +515,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     ctx.tools.register(defineTool({
       name: 'agent_run',
       description:
-        'runs ONE dsh worker agent (a subagent) with a ROLE profile and a briefing and returns its result: role (a profile under $DSH_HOME/profiles), objective (the task) and template (optional briefing file the worker must read first). Each call is an isolated agent process with its own context window and model route; the answer carries the exit code, the worker\'s output and the provisioning notes, so an orchestrator verifies the artifact it asked for instead of trusting prose. A missing DEEPSEEK_API_KEY fails loudly (dsh: MISSING_CREDENTIAL, non-zero exit) after zero work.',
+        'runs ONE dsh worker agent (a subagent) with a ROLE profile and a briefing and returns its result: role (a profile under $DSH_HOME/profiles), objective (the task) and template (optional briefing file the worker must read first). Each call is an isolated agent process with its own context window and model route; the answer carries the exit code, the worker\'s output and the provisioning notes, so an orchestrator verifies the artifact it asked for instead of trusting prose. A missing DEEPSEEK_API_KEY fails loudly (dsh: MISSING_CREDENTIAL, non-zero exit) after zero work. When the optional briefing text is provided it is validated against the dispatch-briefing contract BEFORE the role is provisioned (requires evidence_artifact), and after a clean run the declared evidence_artifact must exist on disk or the dispatch is rejected.',
       parameters: {
         role: {
           type: 'string',
@@ -414,6 +529,14 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         template: {
           type: 'string',
           description: 'absolute path of the project briefing the worker must read BEFORE working (e.g. /opt/omni/workstation/templates/<project>-<role>.md); pass the pointer, never the content',
+        },
+        briefing: {
+          type: 'string',
+          description: 'the FULL composed worker briefing TEXT, composed by the orchestrator per /opt/omni/workstation/skills/ops/dispatch-briefing/SKILL.md. When provided it REPLACES the composed objective prompt (the worker receives this text with the [dsh-session ...] header prepended), it is materialised under <workspace>/.briefings/<sessionId>.md, and it is validated against the dispatch-briefing contract BEFORE the role is provisioned. Requires evidence_artifact.',
+        },
+        evidence_artifact: {
+          type: 'string',
+          description: 'absolute path of the RAW artifact the briefing requires the worker to produce; REQUIRED when briefing is provided and checked on disk after a clean run (exitCode 0, no timeout, no abort); a missing artifact fails the dispatch',
         },
         project: {
           type: 'string',
@@ -437,6 +560,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         const project = sanitizeProject(str(params.project))
         const advisoryWorkdir = str(params.workdir)
         const bound = Math.min(Math.max(int(params.timeoutSecs) ?? timeoutSecs, 30), 7200)
+        // DISPATCH-BRIEFING CONTRACT GATE inputs. `briefing` is the FULL
+        // composed text (the orchestrator has no write tool, so it is text, not
+        // a path); `evidence_artifact` is the raw artifact path the briefing
+        // requires. Both are OPTIONAL: absent, the gate is inert and behaviour
+        // is today's.
+        const briefingText = str(params.briefing)
+        const evidenceArtifact = str(params.evidence_artifact)
 
         // Everything the dispatch record needs is declared OUTSIDE the boundary
         // so the `finally` can write the record even when the boundary throws
@@ -449,6 +579,18 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         let created: string[] = []
         let durationSecs = 0
         let failure: string | undefined
+        // Surfaced contract-gate state, declared OUTSIDE the boundary so the
+        // `finally` record carries it even when the gate itself is the throw.
+        let briefingGate: { provided: boolean; ok: boolean; problems: string[] } = {
+          provided: briefingText !== undefined,
+          ok: briefingText === undefined,
+          problems: [],
+        }
+        let evidence: { artifact: string | null; exists: boolean; validated: boolean } = {
+          artifact: evidenceArtifact ?? null,
+          exists: false,
+          validated: false,
+        }
         let usageReport: UsageReport = {
           usage: [],
           error: 'usage not collected: the dispatch threw before the usage scan',
@@ -465,6 +607,27 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           objective = str(params.objective) ?? ''
           if (objective.length === 0) {
             throw new Error("agent_run: the 'objective' parameter must be a non-empty task statement")
+          }
+
+          // DISPATCH-BRIEFING CONTRACT GATE (PRE-DISPATCH). Active ONLY when a
+          // briefing is provided: a non-conforming briefing is rejected HERE,
+          // before the role is provisioned and before any child is spawned.
+          if (briefingText !== undefined) {
+            if (evidenceArtifact === undefined) {
+              const problems = ["'evidence_artifact' is required when 'briefing' is provided"]
+              briefingGate = { provided: true, ok: false, problems }
+              throw new Error('agent_run: briefing rejected: ' + problems.join('; '))
+            }
+            // Materialise the composed text under the project workspace so the
+            // record and the worker share one addressable file.
+            const briefingsDir = join(workspace, '.briefings')
+            mkdirSync(briefingsDir, { recursive: true })
+            writeFileSync(join(briefingsDir, `${sessionId}.md`), briefingText, 'utf8')
+            const problems = validateBriefing(briefingText, { template, evidenceArtifact })
+            briefingGate = { provided: true, ok: problems.length === 0, problems }
+            if (problems.length > 0) {
+              throw new Error('agent_run: briefing rejected: ' + problems.join('; '))
+            }
           }
 
           const provisioning = await ensureRole(role)
@@ -493,9 +656,11 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             registrationNotes.push('workspace registry not exposed in this process; pre-run registration skipped')
           }
 
-          const task = template === undefined
-            ? objective
-            : `Your briefing is the file ${template} - read it first with the fs tool and follow it. Objective: ${objective}`
+          const task = briefingText !== undefined
+            ? briefingText
+            : template === undefined
+              ? objective
+              : `Your briefing is the file ${template} - read it first with the fs tool and follow it. Objective: ${objective}`
           // The structured id leads the FIRST prompt: the LLM session title is
           // derived from that prompt and the prompt text is indexed by the FTS
           // session-query backend, so role+project+id are readable in the title
@@ -563,6 +728,33 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             }
           }
 
+          // DISPATCH-BRIEFING CONTRACT GATE (POST-RUN). A CLEAN exit must have
+          // produced the raw evidence artifact the briefing declared; a prose
+          // answer with no artifact on disk is a rejection. Runs AFTER the
+          // accounting so the record still carries usage and the created session.
+          const artifactExists = evidenceArtifact === undefined ? false : existsSync(evidenceArtifact)
+          evidence = {
+            artifact: evidenceArtifact ?? null,
+            exists: artifactExists,
+            validated:
+              evidenceArtifact !== undefined &&
+              artifactExists &&
+              runOutput.code === 0 &&
+              !runOutput.timedOut &&
+              !runOutput.aborted,
+          }
+          if (
+            evidenceArtifact !== undefined &&
+            runOutput.code === 0 &&
+            !runOutput.timedOut &&
+            !runOutput.aborted &&
+            !artifactExists
+          ) {
+            throw new Error(
+              'agent_run: evidence artifact missing: ' + evidenceArtifact + ' (exitCode 0, no artifact on disk)',
+            )
+          }
+
           return {
             role,
             project,
@@ -573,6 +765,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             sessionDirs: created.map((id) => join(sessionsDir, bucket, id)),
             objective,
             ...(template === undefined ? {} : { template }),
+            briefingGate,
+            evidence,
             ...(advisoryWorkdir === undefined ? {} : { requestedWorkdir: advisoryWorkdir }),
             command: `node ${bin} ${role} "<briefing>" (cwd ${workspace} -> session bucket ${bucket})`,
             exitCode: runOutput.code,
@@ -629,6 +823,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
               timedOut,
               aborted,
               sessions: created,
+              briefingGate,
+              evidence,
               usage: usageReport.usage,
               ...(usageReport.error === undefined ? {} : { usage_error: usageReport.error }),
               ...(usageReport.sessionLog === undefined ? {} : { usage_session_log: usageReport.sessionLog }),

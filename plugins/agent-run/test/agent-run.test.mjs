@@ -25,11 +25,11 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { apply, name } from '../index.ts'
+import { apply, name, validateBriefing } from '../index.ts'
 
 const FAKE_CLI = `#!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -165,6 +165,47 @@ function defineRole(fix, role) {
 
 const manifestOf = (fix, role) => join(fix.dshHome, 'profiles', role, 'package.json')
 
+const REQUIRED_BRIEFING_SECTIONS = ['Role', 'Template', 'Objective', 'Context', 'Prior session', 'Success evidence', 'Bounds']
+
+/** Every `session-<uuid>` directory under a DSH_HOME session store (recursive, best effort). */
+function sessionDirsUnder(root) {
+  const found = []
+  if (!existsSync(root)) return found
+  for (const bucket of readdirSync(root)) {
+    for (const entry of readdirSync(join(root, bucket))) {
+      if (entry.startsWith('session-')) found.push(join(root, bucket, entry))
+    }
+  }
+  return found
+}
+
+/**
+ * A composed briefing that satisfies the dispatch-briefing contract, with the
+ * template and evidence paths kept inside the fixture root so no real /opt path
+ * is required. `omit` drops a section (e.g. `Context`) to build a non-conforming
+ * briefing.
+ */
+function composedBriefing(fix, evidenceArtifact, { omit = [] } = {}) {
+  const templateDir = join(fix.root, 'templates')
+  mkdirSync(templateDir, { recursive: true })
+  const templatePath = join(templateDir, 'mvp-dsh-developer.md')
+  writeFileSync(templatePath, '# template\n')
+  const values = {
+    Role: 'developer',
+    Template: templatePath,
+    Objective: 'prove the dispatch-briefing contract gate',
+    Context: `Read ${templatePath} before working and follow it.`,
+    'Prior session': 'none: this is a fresh unit of work.',
+    'Success evidence': `Write the raw artifact to ${evidenceArtifact} and paste it.`,
+    Bounds: 'Do not touch production; keep scratch inside the fixture root.',
+  }
+  const body = REQUIRED_BRIEFING_SECTIONS
+    .filter((section) => !omit.includes(section))
+    .map((section) => `## ${section}\n\n${values[section]}`)
+    .join('\n\n')
+  return { text: body, templatePath }
+}
+
 test('the plugin is the agent-run seam and registers the typed "agent_run" tool', () => {
   const fix = fixture()
   try {
@@ -173,8 +214,8 @@ test('the plugin is the agent-run seam and registers the typed "agent_run" tool'
     assert.equal(tool.name, 'agent_run')
     assert.deepEqual(
       Object.keys(tool.parameters.properties).sort(),
-      ['objective', 'project', 'role', 'template', 'timeoutSecs', 'workdir'],
-      'the tool must publish the delegation parameters (role/objective/template/project/workdir/timeoutSecs)',
+      ['briefing', 'evidence_artifact', 'objective', 'project', 'role', 'template', 'timeoutSecs', 'workdir'],
+      'the tool must publish the delegation parameters (role/objective/template/briefing/evidence_artifact/project/workdir/timeoutSecs)',
     )
     assert.ok(tool.parameters.required.includes('objective'), 'objective is the only required parameter')
   } finally {
@@ -468,3 +509,145 @@ test('a dispatch that throws BEFORE the run still writes its record with the raw
     rmSync(fix.root, { recursive: true, force: true })
   }
 })
+
+test('a briefing missing "## Context" is REJECTED before provisioning/spawn, with no session and exitCode null', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    const artifact = join(fix.root, 'evidence', 'out.txt')
+    const { text } = composedBriefing(fix, artifact, { omit: ['Context'] })
+
+    await withEnv({ FAKE_CLI_CALLS: fix.calls }, async () => {
+      await assert.rejects(
+        () => tool.execute({
+          role: 'developer',
+          project: 'gate-x',
+          objective: 'the objective is still required',
+          briefing: text,
+          evidence_artifact: artifact,
+        }),
+        (error) => {
+          assert.ok(error instanceof Error, 'a raw Error must be thrown')
+          assert.match(error.message, /^agent_run: briefing rejected:/)
+          assert.match(error.message, /## Context/)
+          return true
+        },
+      )
+      // the gate fired BEFORE role provisioning and BEFORE the child spawn
+      assert.deepEqual(callsOf(fix), [], 'no init and no worker run may happen')
+    })
+
+    // NO new session-<uuid> directory appeared anywhere
+    assert.deepEqual(sessionDirsUnder(join(fix.dshHome, 'sessions')), [], 'no session directory may exist')
+
+    // the dispatch record is still written, and it shows a pre-run throw
+    const record = JSON.parse(readFileSync(join(fix.projectsDir, 'gate-x', 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.equal(record.exitCode, null)
+    assert.equal(record.briefingGate.provided, true)
+    assert.equal(record.briefingGate.ok, false)
+    assert.ok(Array.isArray(record.briefingGate.problems))
+    assert.ok(record.briefingGate.problems.some((problem) => problem.includes('## Context')))
+    assert.deepEqual(record.evidence, { artifact, exists: false, validated: false })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a conforming briefing whose evidence_artifact does not exist is REJECTED after the run', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    const artifact = join(fix.root, 'evidence', 'never-written.txt')
+    const { text } = composedBriefing(fix, artifact)
+
+    await assert.rejects(
+      () => tool.execute({
+        role: 'developer',
+        project: 'gate-y',
+        objective: 'missing artifact',
+        briefing: text,
+        evidence_artifact: artifact,
+      }),
+      (error) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /^agent_run: evidence artifact missing: /)
+        assert.ok(error.message.includes(artifact), `the path must be named: ${error.message}`)
+        assert.match(error.message, /\(exitCode 0, no artifact on disk\)/)
+        return true
+      },
+    )
+
+    // the worker DID run (one session) and the record shows the clean exit
+    assert.equal(sessionDirsUnder(join(fix.dshHome, 'sessions')).length, 1)
+    const record = JSON.parse(readFileSync(join(fix.projectsDir, 'gate-y', 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.equal(record.exitCode, 0)
+    assert.equal(record.briefingGate.ok, true)
+    assert.deepEqual(record.evidence, { artifact, exists: false, validated: false })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a conforming briefing with an existing artifact passes and carries evidence.validated === true', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    const artifact = join(fix.root, 'evidence', 'written.txt')
+    mkdirSync(join(fix.root, 'evidence'), { recursive: true })
+    writeFileSync(artifact, 'raw evidence\n')
+    const { text } = composedBriefing(fix, artifact)
+
+    const result = await tool.execute({
+      role: 'developer',
+      project: 'gate-z',
+      objective: 'existing artifact',
+      briefing: text,
+      evidence_artifact: artifact,
+    })
+
+    assert.equal(result.exitCode, 0)
+    assert.deepEqual(result.briefingGate, { provided: true, ok: true, problems: [] })
+    assert.deepEqual(result.evidence, { artifact, exists: true, validated: true })
+
+    // the composed text was materialised and it was the worker's first prompt
+    const materialised = join(result.workspace, '.briefings', `${result.sessionId}.md`)
+    assert.ok(existsSync(materialised), 'the briefing file must be materialised')
+    assert.equal(readFileSync(materialised, 'utf8'), text, 'the materialised file is the composed briefing text')
+    const payload = JSON.parse(result.stdoutTail.trim().split('\n').pop())
+    assert.match(payload.briefing, /^\[dsh-session role=developer project=gate-z id=/)
+    assert.ok(payload.briefing.includes('## Success evidence'))
+    assert.ok(payload.briefing.includes(text))
+
+    // the record line mirrors the surfaced gate blocks
+    const record = JSON.parse(readFileSync(join(result.workspace, 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.deepEqual(record.briefingGate, result.briefingGate)
+    assert.deepEqual(record.evidence, result.evidence)
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('validateBriefing flags a missing section, a bad /opt path and a credential value without echoing it', () => {
+  const problems = validateBriefing(
+    [
+      '## Role',
+      'developer',
+      '## Template',
+      '/opt/omni/workstation/templates/does-not-exist-xyz.md',
+      '## Objective',
+      'do the work',
+      '## Prior session',
+      'none',
+      '## Success evidence',
+      'write /tmp/out.txt',
+      '## Bounds',
+      'api_key: SUPER-SECRET-VALUE',
+    ].join('\n\n'),
+    { evidenceArtifact: '/tmp/out.txt' },
+  )
+  assert.ok(problems.some((problem) => problem.includes("'## Context'")), `missing Context: ${JSON.stringify(problems)}`)
+  assert.ok(problems.some((problem) => problem.includes('does-not-exist-xyz.md')), 'the bad template path must be reported')
+  assert.ok(problems.some((problem) => problem.includes('credential')), 'the credential pattern must be reported')
+  assert.ok(!problems.join(' ').includes('SUPER-SECRET-VALUE'), 'the matched credential value must never be echoed')
+})
+

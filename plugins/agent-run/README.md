@@ -105,8 +105,38 @@ The record is written BEST EFFORT: it never replaces or masks the dispatch outco
 | `project` | string | no (default `default`) | the project the worker belongs to (`omnidev`, `workstation`, `demo`, `research`, `my-project-x`, ...): it selects the workspace `<projectsDir>/<project>`, hence the dsh session bucket and the shared session-search authority |
 | `objective` | string | yes | the task: goal + success criteria + the evidence to return |
 | `template` | string | no | absolute path of the project briefing the worker must READ first (pass the pointer, never the content) |
+| `briefing` | string | no | the FULL composed worker briefing TEXT (the orchestrator has no write tool, so this is text, not a path). When provided it REPLACES the objective prompt: the worker receives this text with the `[dsh-session ...]` header prepended, it is materialised under `<workspace>/.briefings/<sessionId>.md`, and it is validated against the dispatch-briefing contract BEFORE the role is provisioned. `evidence_artifact` becomes required |
+| `evidence_artifact` | string | no | absolute path of the RAW artifact the briefing requires the worker to produce; required when `briefing` is provided. After a clean run (`exitCode 0`, no timeout, no abort) a missing artifact fails the dispatch |
 | `workdir` | string | no | ADVISORY only (compatibility): recorded as `requestedWorkdir`, never used as the process cwd, because the cwd must be the project workspace for the session to group (and be searchable) per project |
 | `timeoutSecs` | integer | no | wall-clock bound of this ONE run (default 1200, clamped 30..7200) |
+
+## Dispatch-briefing contract
+
+The orchestrator composes the worker briefing per
+`/opt/omni/workstation/skills/ops/dispatch-briefing/SKILL.md` (role, template, objective, context,
+prior session, success evidence, bounds). There is no write tool on the orchestrator side, so the TEXT
+is passed in `briefing`, and `agent_run` is the single mechanical choke point that enforces the
+contract:
+
+* **pre-dispatch** (active only when `briefing` is provided, so existing dispatches are unchanged):
+  `evidence_artifact` is required; the text is materialised under
+  `<workspace>/.briefings/<sessionId>.md`; it is validated for the seven required `## ` sections
+  (Role, Template, Objective, Context, Prior session, Success evidence, Bounds); every `/opt/...` path
+  it names must exist; the `## Template` value must exist; a credential-VALUE scan
+  (`PRIVATE KEY|ghp_|ghs_|sk-|AKIA|api_key:|password:`) must be clean and the matched value is never
+  echoed; and `evidence_artifact` must appear literally in the text. Any problem throws
+  `agent_run: briefing rejected: <problems>` BEFORE the role is provisioned and BEFORE the child is
+  spawned. When the gate passes, the briefing TEXT is the worker's first prompt (with the
+  `[dsh-session ...]` header prepended); `objective` is still required but no longer composes the
+  prompt.
+* **post-run**: after a clean exit (`exitCode 0`, no timeout, no abort), the declared
+  `evidence_artifact` must exist on disk or the dispatch throws
+  `agent_run: evidence artifact missing: <path> (exitCode 0, no artifact on disk)`. A prose-only result
+  with no raw artifact is rejected.
+
+The answer and the `dsh-sessions.jsonl` record both carry `briefingGate: {provided, ok, problems}` and
+`evidence: {artifact, exists, validated}`. The briefing content itself is never echoed beyond the
+worker's own output.
 
 ## Config
 
