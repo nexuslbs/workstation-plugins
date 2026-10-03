@@ -185,7 +185,7 @@ function sessionDirsUnder(root) {
  * is required. `omit` drops a section (e.g. `Context`) to build a non-conforming
  * briefing.
  */
-function composedBriefing(fix, evidenceArtifact, { omit = [] } = {}) {
+function composedBriefing(fix, evidenceArtifact, { omit = [], extraContext = '' } = {}) {
   const templateDir = join(fix.root, 'templates')
   mkdirSync(templateDir, { recursive: true })
   const templatePath = join(templateDir, 'mvp-dsh-developer.md')
@@ -194,7 +194,7 @@ function composedBriefing(fix, evidenceArtifact, { omit = [] } = {}) {
     Role: 'developer',
     Template: templatePath,
     Objective: 'prove the dispatch-briefing contract gate',
-    Context: `Read ${templatePath} before working and follow it.`,
+    Context: `Read ${templatePath} before working and follow it.${extraContext.length > 0 ? ` ${extraContext}` : ''}`,
     'Prior session': 'none: this is a fresh unit of work.',
     'Success evidence': `Write the raw artifact to ${evidenceArtifact} and paste it.`,
     Bounds: 'Do not touch production; keep scratch inside the fixture root.',
@@ -583,6 +583,94 @@ test('a conforming briefing whose evidence_artifact does not exist is REJECTED a
     assert.equal(record.exitCode, 0)
     assert.equal(record.briefingGate.ok, true)
     assert.deepEqual(record.evidence, { artifact, exists: false, validated: false })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a conforming briefing whose /opt/workspace evidence_artifact does not exist PASSES pre-dispatch and is REJECTED post-run', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    // The artifact lives under the mandated scratch dir `/opt/workspace/tmp/` and
+    // is produced BY the run, so it cannot exist before dispatch. A unique suffix
+    // keeps the assertion honest across repeated runs.
+    const artifact = join(
+      '/opt/workspace/tmp/thread4034',
+      `gate-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      'raw.txt',
+    )
+    assert.equal(existsSync(artifact), false, `the scratch artifact must not exist before the run: ${artifact}`)
+    const { text } = composedBriefing(fix, artifact)
+
+    await withEnv({ FAKE_CLI_CALLS: fix.calls }, async () => {
+      await assert.rejects(
+        () => tool.execute({
+          role: 'developer',
+          project: 'gate-opt',
+          objective: 'the run produces the artifact',
+          briefing: text,
+          evidence_artifact: artifact,
+        }),
+        (error) => {
+          assert.ok(error instanceof Error)
+          console.log('RAW rejection (a): ' + error.message)
+          assert.match(error.message, /^agent_run: evidence artifact missing: /)
+          assert.ok(error.message.includes(artifact), `the path must be named: ${error.message}`)
+          assert.match(error.message, /\(exitCode 0, no artifact on disk\)/)
+          return true
+        },
+      )
+      // the PRE-DISPATCH gate passed: the run WAS attempted (init + run)
+      assert.deepEqual(callsOf(fix), ['init developer', 'run developer'], 'the run must be attempted')
+    })
+
+    // the worker DID run and the record shows the clean exit with the artifact absent
+    assert.equal(sessionDirsUnder(join(fix.dshHome, 'sessions')).length, 1)
+    const record = JSON.parse(readFileSync(join(fix.projectsDir, 'gate-opt', 'dsh-sessions.jsonl'), 'utf8').trim().split('\n').pop())
+    assert.equal(record.exitCode, 0)
+    assert.equal(record.briefingGate.ok, true)
+    assert.deepEqual(record.evidence, { artifact, exists: false, validated: false })
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a conforming briefing naming a NON-EXISTENT /opt/omni pointer is REJECTED before the run', async () => {
+  const fix = fixture()
+  try {
+    const tool = toolFor(fix)
+    // The context-pointer existence check is narrowed to the contract's scope,
+    // `/opt/omni/...`: a missing one is still a pre-dispatch rejection.
+    const artifact = join(fix.root, 'evidence', 'out.txt')
+    const missing = `/opt/omni/workstation/templates/does-not-exist-${process.pid}-${Date.now()}.md`
+    const { text } = composedBriefing(fix, artifact, { extraContext: `Also read ${missing} before working.` })
+
+    await withEnv({ FAKE_CLI_CALLS: fix.calls }, async () => {
+      await assert.rejects(
+        () => tool.execute({
+          role: 'developer',
+          project: 'gate-omni',
+          objective: 'a bad context pointer',
+          briefing: text,
+          evidence_artifact: artifact,
+        }),
+        (error) => {
+          assert.ok(error instanceof Error)
+          console.log('RAW rejection (b): ' + error.message)
+          assert.match(error.message, /^agent_run: briefing rejected:/)
+          assert.ok(
+            error.message.includes(`briefing names a path that does not exist: ${missing}`),
+            `the bad pointer must be named: ${error.message}`,
+          )
+          return true
+        },
+      )
+      // the gate fired BEFORE role provisioning and BEFORE the child spawn
+      assert.deepEqual(callsOf(fix), [], 'no init and no worker run may happen')
+    })
+
+    assert.deepEqual(sessionDirsUnder(join(fix.dshHome, 'sessions')), [], 'no session directory may exist')
   } finally {
     rmSync(fix.root, { recursive: true, force: true })
   }

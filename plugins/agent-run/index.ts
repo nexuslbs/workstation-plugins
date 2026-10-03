@@ -64,7 +64,7 @@
 
 import { spawn } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
 import { collectUsage, type UsageReport } from '../../shared/usage.ts'
@@ -322,6 +322,21 @@ function briefingPathTokens(text: string): string[] {
   return [...tokens]
 }
 
+/**
+ * True when `token` is the declared evidence artifact, its parent directory, or
+ * a path under that parent. The artifact is BY DESIGN produced by the run, so it
+ * can never be required to exist BEFORE the run: the pre-dispatch existence
+ * checks must not reject the briefing that names it.
+ */
+function isEvidenceScope(token: string, evidenceArtifact: string | undefined): boolean {
+  if (evidenceArtifact === undefined || token.length === 0) return false
+  if (token === evidenceArtifact) return true
+  const parent = dirname(evidenceArtifact)
+  // A root/relative parent would exempt far more than the artifact's directory.
+  if (parent === '/' || parent === '.') return false
+  return token === parent || token.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+}
+
 /** The first value line under the `## Template` heading (backticks/quotes stripped). */
 function templateSectionValue(text: string): string | undefined {
   const lines = text.split(/\r?\n/)
@@ -359,14 +374,23 @@ export function validateBriefing(
     }
   }
 
-  // 2. every /opt path token in the briefing must exist on disk.
+  // 2. every /opt/omni context pointer in the briefing must exist on disk. The
+  //    existence check is narrowed to the contract's OWN scope: the dispatch
+  //    skill's verification greps `/opt/omni/[^ )]+` only, while an artifact the
+  //    briefing asks the run to CREATE usually lives under /opt/workspace (or a
+  //    repo), which does not exist before the run. The declared evidence
+  //    artifact and anything under its parent directory are exempt as well: they
+  //    are produced BY the run.
   for (const token of briefingPathTokens(text)) {
+    if (!token.startsWith('/opt/omni/')) continue
+    if (isEvidenceScope(token, options.evidenceArtifact)) continue
     if (existsSync(token)) continue
     reportedPaths.add(token)
     problems.push(`briefing names a path that does not exist: ${token}`)
   }
 
   // 3. the '## Template' value (and the optional template parameter) must exist.
+  //    The declared evidence artifact (and its parent scope) is exempt here too.
   const declaredRaw = templateSectionValue(text)
   const declared = declaredRaw === undefined ? undefined : normalizePathToken(declaredRaw)
   const templateCandidate =
@@ -375,10 +399,19 @@ export function validateBriefing(
       : isAbsolute(declared)
         ? declared
         : options.template ?? join('/opt/omni/workstation/templates', declared)
-  if (templateCandidate !== undefined && !existsSync(templateCandidate) && !reportedPaths.has(templateCandidate)) {
+  if (
+    templateCandidate !== undefined &&
+    !existsSync(templateCandidate) &&
+    !reportedPaths.has(templateCandidate) &&
+    !isEvidenceScope(templateCandidate, options.evidenceArtifact)
+  ) {
     problems.push(`the '## Template' value does not exist: ${templateCandidate}`)
   }
-  if (options.template !== undefined && !existsSync(options.template)) {
+  if (
+    options.template !== undefined &&
+    !existsSync(options.template) &&
+    !isEvidenceScope(options.template, options.evidenceArtifact)
+  ) {
     problems.push(`the 'template' parameter path does not exist: ${options.template}`)
   }
 
