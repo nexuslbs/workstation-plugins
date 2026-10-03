@@ -295,6 +295,57 @@ test('usageFromSession appends one dict per LLM call, splices nested arrays, agg
   assert.match(aggregate.cost.pricing_ref, /^config\/model_prices\.yml@/)
   close(aggregate.cost.amount_usd, 0.000075, 'aggregate')
 })
+test('a nested session tree flattens to ONE array: every call once, in call order', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'usage-tree-'))
+  const call = (agent, tokens, details, extra = {}) => ({
+    agent,
+    input_tokens: tokens,
+    output_tokens: 1,
+    total_tokens: tokens + 1,
+    cached_input_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: null,
+    cost: null,
+    provider: 'deepseek-official',
+    model: 'deepseek-flash',
+    request_id: null,
+    details,
+    ...extra,
+  })
+  const grandchild = [
+    call('vision', 7, { kind: 'llm-call', session_id: 'gc', seq: 1 }),
+    call('vision', 0, { kind: 'agent-aggregate', session_id: 'gc', llm_calls: 1, tool_calls: 0 }),
+  ]
+  const child = [
+    call('websearcher', 10, { kind: 'llm-call', session_id: 'child', seq: 2 }),
+    // A nested array INSIDE the projected array (a child of the child) must be
+    // expanded, never kept as a nested entry the caller has to unwrap.
+    grandchild,
+    // The SAME grandchild array spliced twice (a re-projected tool result) must
+    // be deduped, never counted twice.
+    grandchild,
+    call('websearcher', 0, { kind: 'agent-aggregate', session_id: 'child', llm_calls: 1, tool_calls: 1 }),
+  ]
+  const log = writeLog(dir, [
+    { type: 'session', id: 'parent', cwd: '/x', delegationDepth: 0 },
+    { type: 'assistant/message', seq: 1, data: { turn: 1, step: 1, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 120 }, message: { id: 'p1', source: { provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    { type: 'tool/result', seq: 2, data: { meta: { _meta: { usage: child } }, message: { content: [] } } },
+  ])
+  const report = usageFromSession(log, 'researcher')
+  // 1 parent call + (1 child call + 1 grandchild call + their 2 roll-ups) + the
+  // parent's OWN aggregate. No entry is itself an array.
+  assert.equal(report.usage.length, 6, `got ${report.usage.length} entries`)
+  assert.equal(report.usage.some((entry) => Array.isArray(entry)), false, 'the array must be FLAT')
+  assert.deepEqual(
+    report.usage.map((entry) => entry.details.session_id),
+    ['parent', 'child', 'gc', 'gc', 'child', 'parent'],
+    'call order across the whole tree, no session missing, no session duplicated',
+  )
+  const identities = new Set(report.usage.map((entry) => JSON.stringify(entry)))
+  assert.equal(identities.size, report.usage.length, 'no duplicated entry')
+  assert.equal(report.usage.at(-1).details.kind, 'agent-aggregate')
+  assert.equal(report.usage.at(-1).details.session_id, 'parent')
+})
 
 test('collectUsage finds the child session by marker and errors when it is absent', () => {
   const dir = mkdtempSync(join(tmpdir(), 'usage-bucket-'))

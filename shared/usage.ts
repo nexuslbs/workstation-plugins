@@ -514,7 +514,12 @@ export function usageFromSession(logPath: string, agent: string): UsageReport {
     if (event.type === 'tool/result') {
       toolCalls += 1
       const nested = toolResultUsage(event)
-      if (nested !== undefined && nested.length > 0) usage.push(...nested)
+      // A nested array is FLATTENED (and an identical re-projection deduped)
+      // before it is spliced in, so the array a caller receives is always ONE
+      // flat list of per-call dicts for the WHOLE session tree (operator
+      // request 2026-10-03, telegram 4004/4005: "do not nest, instead flatten
+      // it").
+      if (nested !== undefined && nested.length > 0) usage.push(...flattenUsage(nested))
     }
   }
   // The aggregate cost is the sum of THIS agent's OWN priced calls (nested
@@ -547,7 +552,7 @@ export function usageFromSession(logPath: string, agent: string): UsageReport {
     },
   }
   usage.push(aggregate)
-  return { usage, sessionLog: logPath }
+  return { usage: flattenUsage(usage), sessionLog: logPath }
 }
 
 /** The provider/model of one `assistant/message` event. */
@@ -591,4 +596,61 @@ export function cloneUsage(usage: readonly UsageCall[]): UsageCall[] {
     cost: entry.cost === null ? null : { ...entry.cost },
     details: { ...entry.details },
   }))
+}
+
+/**
+ * ONE flat usage array: recursively expand any nested usage array and drop a
+ * repeated call identity, keeping CALL ORDER.
+ *
+ * WHY (operator request 2026-10-03, telegram threads 4004/4005): a nested agent
+ * call returns its own `_meta.usage` array, which a parent splices in at the
+ * call point. A splice can carry a nested array (or the same child array twice -
+ * a re-projected tool result), so the OUTERMOST payload must still be exactly
+ * ONE flat array of per-call dicts with every session of the WHOLE tree present
+ * exactly once. Dedupe uses ONLY a real call identity
+ * (`details.session_id` plus `details.message_id` / `details.seq`); a per-call
+ * item that carries no identity is kept as-is, never dropped.
+ */
+export function flattenUsage(entries: readonly unknown[]): UsageCall[] {
+  const flat: UsageCall[] = []
+  const seen = new Set<string>()
+  const push = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) push(item)
+      return
+    }
+    if (value === null || typeof value !== 'object') return
+    const call = value as UsageCall
+    const key = usageIdentity(call)
+    if (key !== undefined) {
+      if (seen.has(key)) return
+      seen.add(key)
+    }
+    flat.push(call)
+  }
+  for (const entry of entries) push(entry)
+  return flat
+}
+
+/**
+ * The stable identity of ONE usage dict, or undefined when it carries none.
+ *
+ * The dsh layer stamps every per-call item with `details.session_id` plus
+ * `details.message_id` (or `details.seq`), and one `agent-aggregate` roll-up per
+ * session. Anything else (a legacy/foreign shape) has NO identity and is kept.
+ */
+function usageIdentity(call: UsageCall): string | undefined {
+  const details = call.details
+  if (details === null || typeof details !== 'object') return undefined
+  const session = details.session_id
+  if (typeof session !== 'string' || session.length === 0) return undefined
+  const kind = typeof details.kind === 'string' ? details.kind : ''
+  const messageId = details.message_id
+  if (typeof messageId === 'string' && messageId.length > 0) return `${session}|${kind}|${messageId}`
+  const seq = details.seq
+  if (typeof seq === 'number' && Number.isFinite(seq)) return `${session}|${kind}|seq:${seq}`
+  // ONE roll-up per session: a re-splice of the same session aggregate is the
+  // same item. A per-CALL item with no message/seq identity is never deduped
+  // (two calls of one session must both survive).
+  return kind === 'agent-aggregate' ? `${session}|agent-aggregate` : undefined
 }
