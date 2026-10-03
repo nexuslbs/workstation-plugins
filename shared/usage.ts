@@ -32,12 +32,10 @@
 // ----
 // Cost is computed by THIS MODULE from the SHARED external definition file
 // `{OMNI_DIR}/config/model_prices.yml` (`shared/pricing.ts`), never estimated by
-// an agent: costOf() answers
-// `{ amount_usd, is_estimate: true, source, pricing_ref, rate_class, call_time }`
-// for a route the file prices, and `cost: null` otherwise. Peak vs off-peak is
-// decided from the CALL time (UTC) against the file's `off_peak:` calendar, so
-// a call inside DeepSeek's off-peak window is billed at the off-peak rate.
-// Editing the file (a rate or a window) changes future costs with no rebuild,
+// an agent: costOf() answers `{ amount_usd, is_estimate: true, source,
+// pricing_ref }` for a route the file prices, and `cost: null` otherwise.
+// There is NO time dimension: ONE price class per model, so a call costs the
+// same whenever it runs. Editing a rate changes future costs with no rebuild,
 // no restart and no release.
 
 import { randomBytes } from 'node:crypto'
@@ -50,9 +48,9 @@ import { aggregateProvenance, costOf, loadPriceTable, type UsageCost } from './p
 export const SESSION_LOG_NAME = 'session.v4.jsonl.zstd'
 
 /**
- * One per-call cost block. `amount_usd` stays null when unpriced, and for a
- * priced call it carries `rate_class` (peak / off-peak) plus the `call_time` it
- * was derived from. Defined in `shared/pricing.ts` (the reader of the shared
+ * One per-call cost block. `amount_usd` stays null when unpriced; a priced
+ * block carries its provenance (`source` / `pricing_ref`). There is NO time
+ * dimension. Defined in `shared/pricing.ts` (the reader of the shared
  * `{OMNI_DIR}/config/model_prices.yml`) and re-exported here so every caller
  * keeps importing it from `shared/usage.ts`.
  */
@@ -99,12 +97,11 @@ export {
   parsePriceYaml,
   priceFilePath,
   priceOf,
-  rateClassAt,
   PRICES_FILE,
   PRICES_RELATIVE,
   PRICES_SOURCE,
 } from './pricing.ts'
-export type { PriceTable, RateClass, Rates } from './pricing.ts'
+export type { PriceTable, Rates } from './pricing.ts'
 
 /** A short unique token embedded in a child briefing so its session is identifiable. */
 export function usageToken(): string {
@@ -369,27 +366,6 @@ function sum(...values: Array<number | null>): number | null {
   return seen ? total : null
 }
 
-/**
- * The UTC timestamp of one session event, in milliseconds, or null when the log
- * carries none (then the cost falls back to the PEAK rate, never an error).
- *
- * Accepts an epoch number (SECONDS or milliseconds) or a parseable date string
- * under the usual harness keys. The `session` header's `createdAt` is the last
- * resort, so a call in a log without per-event timestamps is still priced at
- * (approximately) its own time rather than at report time.
- */
-export function eventTimeMs(event: Record<string, unknown>): number | null {
-  for (const key of ['timestamp', 'time', 'ts', 'createdAt', 'at']) {
-    const raw = event[key]
-    if (typeof raw === 'number' && Number.isFinite(raw)) return raw > 1e11 ? raw : raw * 1000
-    if (typeof raw === 'string' && raw.length > 0) {
-      const parsed = Date.parse(raw)
-      if (!Number.isNaN(parsed)) return parsed
-    }
-  }
-  return null
-}
-
 /** Build one per-call dict from one `assistant/message` usage block. */
 export function callOf(
   agent: string,
@@ -397,7 +373,6 @@ export function callOf(
   provider: string | null,
   model: string | null,
   details: Record<string, unknown>,
-  atMs: number | null = null,
 ): UsageCall {
   const input = num(usage.inputTokens)
   const output = num(usage.outputTokens)
@@ -412,7 +387,7 @@ export function callOf(
     cached_input_tokens: cacheRead,
     cache_write_tokens: cacheWrite,
     reasoning_tokens: num(usage.reasoningTokens),
-    cost: costOf(provider, model, { input, output, cacheRead, cacheWrite }, atMs),
+    cost: costOf(provider, model, { input, output, cacheRead, cacheWrite }),
     provider,
     model,
     request_id: null,
@@ -522,7 +497,7 @@ export function usageFromSession(logPath: string, agent: string): UsageReport {
         const messageId = str((message as { id?: unknown }).id)
         if (messageId !== null) details.message_id = messageId
       }
-      const call = callOf(agent, usageBlock as Record<string, unknown>, source.provider, source.model, details, eventTimeMs(event))
+      const call = callOf(agent, usageBlock as Record<string, unknown>, source.provider, source.model, details)
       usage.push(call)
       if (call.cost !== null) {
         pricedCalls += 1

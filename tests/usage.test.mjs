@@ -9,14 +9,12 @@
 //     `{OMNI_DIR}/config/model_prices.yml` (`shared/pricing.ts`) with its
 //     provenance, or is null when the file does not price the route (never
 //     agent-estimated);
-//   * the rate class (peak / off-peak) is selected from the CALL time in UTC.
+//   * there is NO time dimension: ONE price class per model, so the cost is a
+//     pure function of (provider, model, tokens) - the earlier peak/off-peak
+//     layer is REMOVED and a stale file that still carries it is INVALID.
 //
 // The suite runs against a TEMP omni dir seeded with the documented file, so it
-// never depends on the machine's OMNI_DIR and never on the wall clock: the
-// tests that must be deterministic pass an explicit instant.
-//
-// 2026-10-05 is a Monday (inside the configured 01:00-04:00 / 06:00-10:00 UTC
-// peak windows at 02:00Z, outside them at 20:00Z); 2026-10-03 is a Saturday.
+// never depends on the machine's OMNI_DIR and never on the wall clock.
 
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
@@ -25,21 +23,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
 
-/** The documented definition file: DeepSeek peak rates + the off-peak calendar. */
-const FIXTURE = `version: price_table_v2
-
-off_peak:
-  timezone: UTC
-  default_class: off-peak
-  weekdays_only: true
-  holiday_dates: []
-  windows:
-    - start: "01:00"
-      end: "04:00"
-      class: peak
-    - start: "06:00"
-      end: "10:00"
-      class: peak
+/** The documented definition file: ONE price class per model (no off-peak). */
+const FIXTURE = `version: price_table_v3
 
 providers:
   deepseek:
@@ -48,7 +33,25 @@ providers:
       cached_input: 0.006
       output: 1.20
       cache_write: 0.30
-      off_peak_factor: 0.5
+      reasoning: 1.20
+    deepseek-v4-flash:
+      input: 0.30
+      cached_input: 0.006
+      output: 1.20
+      cache_write: 0.30
+      reasoning: 1.20
+    deepseek-v4.1-flash:
+      input: 0.30
+      cached_input: 0.006
+      output: 1.20
+      cache_write: 0.30
+      reasoning: 1.20
+    deepseek-v4-pro:
+      input: 1.32
+      cached_input: 0.044
+      output: 3.96
+      cache_write: 1.32
+      reasoning: 3.96
   google:
     gemini-2.5-flash:
       input: 0.30
@@ -58,6 +61,7 @@ providers:
 
 aliases:
   deepseek-official: deepseek
+  opencode-go: deepseek
 `
 
 // A private omni dir for the whole suite: the cost helpers resolve
@@ -77,9 +81,6 @@ const {
   projectKey,
   usageFromSession,
 } = await import('../shared/usage.ts')
-
-const PEAK = Date.parse('2026-10-05T02:00:00Z')
-const OFF_PEAK = Date.parse('2026-10-05T20:00:00Z')
 
 function close(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) < 1e-9, `${message ?? 'value'}: got ${actual}, want ${expected}`)
@@ -112,135 +113,87 @@ test('the default file is {OMNI_DIR}/config/model_prices.yml', () => {
   assert.equal(loadPriceTable().status, 'loaded')
 })
 
-test('cost is priced from the shared file: peak vs off-peak chosen by the CALL time', () => {
+test('cost is priced from the shared file with provenance and NO time dimension', () => {
   const table = loadPriceTable()
   const tokens = { input: 1_000_000, output: 100_000, cacheRead: 200_000, cacheWrite: 0 }
-  // The dsh/workstation entries carry the FRESH (cache-miss) input in `input`
-  // and the hits in `cached_input_tokens` (see the aggregate field semantics in
-  // usage_entries.rs), so no subtraction happens here:
-  // 1,000,000 * 0.30 + 200,000 cache-hit * 0.006 + 100,000 * 1.20.
-  const expectedPeak = (1_000_000 / 1e6) * 0.3 + (200_000 / 1e6) * 0.006 + (100_000 / 1e6) * 1.2
-  const peak = costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, table)
-  const off = costOf('deepseek-official', 'deepseek-flash', tokens, OFF_PEAK, table)
-  close(peak.amount_usd, expectedPeak, 'peak amount')
-  assert.equal(peak.rate_class, 'peak')
-  assert.equal(peak.call_time, '2026-10-05T02:00:00Z')
-  assert.equal(peak.off_peak_factor, undefined, 'no multiplier is reported on a peak call')
-  assert.equal(peak.is_estimate, true)
-  assert.equal(peak.source, 'model_prices.yml')
-  assert.match(peak.pricing_ref, /^config\/model_prices\.yml@price_table_v2#[0-9a-f]{16}$/)
-  // The SAME call at 20:00Z is off-peak: EVERY bucket is halved.
-  close(off.amount_usd, expectedPeak / 2, 'off-peak amount')
-  assert.equal(off.rate_class, 'off-peak')
-  assert.equal(off.off_peak_factor, 0.5)
-  assert.equal(off.call_time, '2026-10-05T20:00:00Z')
-  assert.equal(off.pricing_ref, peak.pricing_ref)
+  // 1,000,000 * 0.30 + 200,000 cache-hit * 0.006 + 100,000 * 1.20 = 0.4212.
+  const expected = (1_000_000 / 1e6) * 0.3 + (200_000 / 1e6) * 0.006 + (100_000 / 1e6) * 1.2
+  const first = costOf('deepseek-official', 'deepseek-flash', tokens, table)
+  close(first.amount_usd, expected, 'amount')
+  assert.equal(first.is_estimate, true)
+  assert.equal(first.source, 'model_prices.yml')
+  assert.match(first.pricing_ref, /^config\/model_prices\.yml@price_table_v3#[0-9a-f]{16}$/)
+  // The cost block carries NO rate class, NO call time and NO multiplier: the
+  // cost path takes no timestamp at all.
+  assert.equal(first.rate_class, undefined, 'no rate class on a single-class cost')
+  assert.equal(first.call_time, undefined, 'no call time on a single-class cost')
+  assert.equal(first.off_peak_factor, undefined)
+  // The SAME call is priced identically however often it is computed.
+  const again = costOf('deepseek-official', 'deepseek-flash', tokens, table)
+  assert.deepEqual(again, first)
 })
 
-test('window boundaries are start-inclusive, end-exclusive (and weekends are off-peak)', () => {
+test('a route absent from a valid file stays unpriced (null), never fabricated', () => {
   const table = loadPriceTable()
-  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
-  const cases = [
-    ['2026-10-05T00:59:00Z', 'off-peak'],
-    ['2026-10-05T01:00:00Z', 'peak'],
-    ['2026-10-05T03:59:00Z', 'peak'],
-    ['2026-10-05T04:00:00Z', 'off-peak'],
-    ['2026-10-05T05:59:00Z', 'off-peak'],
-    ['2026-10-05T06:00:00Z', 'peak'],
-    ['2026-10-05T09:59:00Z', 'peak'],
-    ['2026-10-05T10:00:00Z', 'off-peak'],
-    // Saturday 02:00Z sits inside a window but DeepSeek bills weekends fully
-    // off-peak.
-    ['2026-10-03T02:00:00Z', 'off-peak'],
-    ['2026-10-04T02:00:00Z', 'off-peak'],
-  ]
-  for (const [iso, expected] of cases) {
-    const cost = costOf('deepseek-official', 'deepseek-flash', tokens, Date.parse(iso), table)
-    assert.equal(cost.rate_class, expected, `at ${iso}`)
-  }
+  assert.equal(costOf('acme', 'mystery-model', { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, table), null)
 })
 
-test('editing the calendar changes the cost with no rebuild (and holidays are configurable)', () => {
-  const holidaySeed = FIXTURE.replace('  holiday_dates: []', '  holiday_dates: ["2026-10-05"]')
-  assert.ok(holidaySeed.includes('2026-10-05'))
-  const holidayPath = writePrices('holiday', holidaySeed)
-  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
-  const base = costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, loadPriceTable())
-  close(base.amount_usd, 0.3, 'peak before the calendar edit')
-  const holiday = costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, loadPriceTable(holidayPath))
-  assert.equal(holiday.rate_class, 'off-peak')
-  close(holiday.amount_usd, 0.15, 'holiday = half')
-  // The original file is untouched: the same route is peak again.
-  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, loadPriceTable()).rate_class, 'peak')
-})
-
-test('a call with NO timestamp falls back to peak and never errors', () => {
-  const table = loadPriceTable()
-  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
-  for (const at of [null, undefined, Number.NaN]) {
-    const cost = costOf('deepseek-official', 'deepseek-flash', tokens, at, table)
-    assert.equal(cost.rate_class, 'peak', `at=${String(at)}`)
-    assert.equal(cost.call_time, null)
-    close(cost.amount_usd, 0.3, 'peak fallback')
-  }
-})
-
-test('a route without off_peak_factor is never discounted (flat-priced provider)', () => {
-  const table = loadPriceTable()
-  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
-  const cost = costOf('google', 'gemini-2.5-flash', tokens, OFF_PEAK, table)
-  assert.equal(cost.rate_class, 'peak')
-  close(cost.amount_usd, 0.3, 'gemini stays at the list rate')
-})
-
-test('an unknown route stays unpriced (null), never fabricated', () => {
-  const table = loadPriceTable()
-  assert.equal(costOf('acme', 'mystery-model', { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, PEAK, table), null)
-})
-
-test('missing / empty / malformed files yield a numeric 0 cost, never an error', () => {
+test('missing / empty files yield a numeric 0 cost, never an error', () => {
   const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
   const missing = loadPriceTable(join(mkdtempSync(join(tmpdir(), 'usage-missing-')), 'model_prices.yml'))
   assert.equal(missing.status, 'missing')
-  const missingCost = costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, missing)
+  const missingCost = costOf('deepseek-official', 'deepseek-flash', tokens, missing)
   assert.equal(missingCost.amount_usd, 0)
   assert.equal(missingCost.pricing_ref, 'config/model_prices.yml#missing')
   const empty = loadPriceTable(writePrices('empty', '\n# nothing here\n'))
   assert.equal(empty.status, 'empty')
-  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, empty).amount_usd, 0)
-  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, empty).pricing_ref, 'config/model_prices.yml#empty')
-  const invalid = loadPriceTable(writePrices('invalid', 'providers: [not a map\n  :::\n  - oops\n'))
-  assert.equal(invalid.status, 'invalid')
-  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, invalid).amount_usd, 0)
-  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, PEAK, invalid).pricing_ref, 'config/model_prices.yml#invalid')
+  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, empty).amount_usd, 0)
+  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, empty).pricing_ref, 'config/model_prices.yml#empty')
 })
 
-test('an unusable off_peak block falls back to peak without erroring', () => {
-  const broken = writePrices('bad-block', 'off_peak:\n  default_class: nope\nproviders:\n  deepseek:\n    deepseek-flash:\n      input: 0.30\n      output: 1.20\n      off_peak_factor: 0.5\n')
-  const table = loadPriceTable(broken)
-  assert.equal(table.status, 'loaded', 'a bad calendar never invalidates the RATES')
-  assert.equal(table.offPeak, null)
-  const cost = costOf('deepseek-official', 'deepseek-flash', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, OFF_PEAK, table)
-  assert.equal(cost.rate_class, 'peak')
-  close(cost.amount_usd, 0.3, 'peak fallback')
+test('an invalid file stores NO cost (null), never an error and never a 0', () => {
+  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const invalid = loadPriceTable(writePrices('invalid', 'providers: [not a map\n  :::\n  - oops\n'))
+  assert.equal(invalid.status, 'invalid')
+  assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, invalid), null)
+})
+
+test('a stale file with the REMOVED time-aware keys is rejected (strict schema)', () => {
+  const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const staleFiles = [
+    // the removed file-level off-peak calendar
+    'off_peak:\n  default_class: off-peak\n  weekdays_only: true\n  holiday_dates: []\n  windows:\n    - start: "01:00"\n      end: "04:00"\n      class: peak\nproviders:\n  deepseek:\n    deepseek-flash:\n      input: 0.30\n      cached_input: 0.006\n      output: 1.20\n      cache_write: 0.30\n',
+    // the removed per-route multiplier
+    'providers:\n  deepseek:\n    deepseek-flash:\n      input: 0.30\n      cached_input: 0.006\n      output: 1.20\n      cache_write: 0.30\n      off_peak_factor: 0.5\n',
+    // any other key outside the canonical schema
+    'future_top_level: yes\nproviders:\n  deepseek:\n    deepseek-flash:\n      input: 0.30\n      cached_input: 0.006\n      output: 1.20\n      cache_write: 0.30\n',
+    'providers:\n  deepseek:\n    deepseek-flash:\n      input: 0.30\n      cached_input: 0.006\n      output: 1.20\n      cache_write: 0.30\n      rate_class: peak\n',
+  ]
+  staleFiles.forEach((stale, index) => {
+    const table = loadPriceTable(writePrices(`stale-${index}`, stale))
+    assert.equal(table.status, 'invalid', `stale file #${index} must be REJECTED, never tolerated`)
+    assert.equal(costOf('deepseek-official', 'deepseek-flash', tokens, table), null, `stale file #${index} must store no cost`)
+  })
+  // The SAME rates in the canonical schema DO price: the rejection is about the
+  // schema, not about the rates.
+  const canonical = loadPriceTable(writePrices('canonical', FIXTURE))
+  close(costOf('deepseek-official', 'deepseek-flash', tokens, canonical).amount_usd, 0.3, 'canonical control')
 })
 
 test('the built-in YAML subset parser reads the documented file and rejects garbage', () => {
   const parsed = parsePriceYaml(FIXTURE)
   assert.ok(parsed !== undefined)
-  assert.equal(parsed.version, 'price_table_v2')
+  assert.equal(parsed.version, 'price_table_v3')
   assert.equal(parsed.providers.deepseek['deepseek-flash'].input, 0.3)
   assert.equal(parsed.providers.deepseek['deepseek-flash'].cached_input, 0.006)
-  assert.equal(parsed.providers.deepseek['deepseek-flash'].off_peak_factor, 0.5)
+  assert.equal(parsed.providers.deepseek['deepseek-flash'].off_peak_factor, undefined)
   assert.equal(parsed.aliases['deepseek-official'], 'deepseek')
-  assert.equal(parsed.offPeak.defaultClass, 'off-peak')
-  assert.equal(parsed.offPeak.weekdaysOnly, true)
-  assert.deepEqual(parsed.offPeak.windows, [
-    { start: 60, end: 240, class: 'peak' },
-    { start: 360, end: 600, class: 'peak' },
-  ])
+  assert.equal(parsed.offPeak, undefined, 'no off-peak calendar exists any more')
   assert.equal(parsePriceYaml('providers: [not a map\n  :::\n  - oops\n'), undefined)
   assert.equal(parsePriceYaml('providers:\n  deepseek:\n    m1\n'), undefined)
+  // Strict schema at the parser level too.
+  assert.equal(parsePriceYaml('off_peak:\n  default_class: peak\nproviders:\n  deepseek:\n    m1:\n      input: 1.0\n'), undefined)
+  assert.equal(parsePriceYaml('providers:\n  deepseek:\n    m1:\n      input: 1.0\n      off_peak_factor: 0.5\n'), undefined)
 })
 
 test('the SHARED definition file prices the same route the same way', (t) => {
@@ -256,36 +209,55 @@ test('the SHARED definition file prices the same route the same way', (t) => {
   const shipped = loadPriceTable(seedPath)
   assert.equal(shipped.status, 'loaded', `shipped file must load: ${seedPath}`)
   const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
-  for (const [at, expected] of [[PEAK, 0.3], [OFF_PEAK, 0.15]]) {
-    const cost = costOf('deepseek-official', 'deepseek-flash', tokens, at, shipped)
-    assert.equal(cost.rate_class, at === PEAK ? 'peak' : 'off-peak')
-    close(cost.amount_usd, expected, `shipped file at ${new Date(at).toISOString()}`)
+  const fixture = loadPriceTable()
+  for (const [provider, model] of [
+    ['deepseek-official', 'deepseek-flash'],
+    ['deepseek-official', 'deepseek-v4-flash'],
+    ['deepseek-official', 'deepseek-v4-pro'],
+    ['google', 'gemini-2.5-flash'],
+  ]) {
+    const a = costOf(provider, model, tokens, shipped)
+    const b = costOf(provider, model, tokens, fixture)
+    assert.notEqual(a, null, `${provider}/${model} must be priced by the shipped file`)
+    assert.notEqual(b, null, `${provider}/${model} must be priced by the fixture`)
+    // The two FILES hold different bytes, so their `pricing_ref` content hash
+    // differs by construction: the parity contract is the PRICE (amount, source,
+    // estimate flag) plus the same file version, not the hash.
+    assert.deepEqual(
+      { amount: a.amount_usd, source: a.source, estimate: a.is_estimate },
+      { amount: b.amount_usd, source: b.source, estimate: b.is_estimate },
+      `${provider}/${model} must price identically on both sides`,
+    )
+    const refA = String(a.pricing_ref)
+    const refB = String(b.pricing_ref)
+    assert.equal(
+      refA.split('#')[0],
+      refB.split('#')[0],
+      `${provider}/${model} must carry the same file identity on both sides`,
+    )
   }
 })
 
-test('usageFromSession prices EVERY call at its own time, aggregate LAST', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'usage-times-'))
+test('usageFromSession prices every call from its own route with no time dimension', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'usage-log-cost-'))
   const log = writeLog(dir, [
-    { type: 'session', id: 'session-times', createdAt: PEAK, cwd: '/x', delegationDepth: 0 },
-    // 02:00Z Monday: peak.
-    { type: 'assistant/message', seq: 2, timestamp: '2026-10-05T02:00:00Z', data: { usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 1500 }, message: { id: 'm1', source: { provider: 'deepseek-official', model: 'deepseek-flash' } } } },
-    // 20:00Z Monday: off-peak.
+    { type: 'session', id: 'session-1', createdAt: 1, cwd: '/x' },
+    { type: 'assistant/message', seq: 2, time: '2026-10-05T02:00:00Z', data: { usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 1500 }, message: { id: 'm1', source: { provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    // A different wall clock, the same cost: there is no rate class any more.
     { type: 'assistant/message', seq: 4, time: '2026-10-05T20:00:00Z', data: { usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 1500 }, message: { id: 'm2', source: { provider: 'deepseek-official', model: 'deepseek-flash' } } } },
   ])
   const report = usageFromSession(log, 'researcher')
   assert.equal(report.usage.length, 3)
-  assert.equal(report.usage[0].cost.rate_class, 'peak')
-  assert.equal(report.usage[0].cost.call_time, '2026-10-05T02:00:00Z')
-  close(report.usage[0].cost.amount_usd, 0.0009, 'peak call')
-  assert.equal(report.usage[1].cost.rate_class, 'off-peak')
-  assert.equal(report.usage[1].cost.call_time, '2026-10-05T20:00:00Z')
-  assert.equal(report.usage[1].cost.off_peak_factor, 0.5)
-  close(report.usage[1].cost.amount_usd, 0.00045, 'off-peak call')
+  assert.equal(report.usage[0].cost.rate_class, undefined)
+  assert.equal(report.usage[1].cost.call_time, undefined)
+  assert.equal(report.usage[1].cost.off_peak_factor, undefined)
+  close(report.usage[0].cost.amount_usd, 0.0009, 'call 1')
+  close(report.usage[1].cost.amount_usd, 0.0009, 'call 2 (same cost at a different time)')
   const aggregate = report.usage.at(-1)
   assert.equal(aggregate.details.kind, 'agent-aggregate')
   assert.equal(aggregate.cost.source, 'model_prices.yml')
   assert.match(aggregate.cost.pricing_ref, /^config\/model_prices\.yml@/)
-  close(aggregate.cost.amount_usd, 0.00135, 'aggregate = peak + off-peak')
+  close(aggregate.cost.amount_usd, 0.0018, 'aggregate = call 1 + call 2')
 })
 
 test('usageFromSession appends one dict per LLM call, splices nested arrays, aggregate LAST', () => {
@@ -316,12 +288,12 @@ test('usageFromSession appends one dict per LLM call, splices nested arrays, agg
   assert.equal(aggregate.input_tokens, 130)
   assert.equal(aggregate.output_tokens, 30)
   assert.equal(aggregate.total_tokens, 160)
-  // Both OWN calls are priced from the shared file, so the aggregate carries
-  // their sum with the same provenance (nested subagent entries are NOT folded
-  // in). No event carries a timestamp: both fall back to the PEAK rate.
+  // Both OWN calls are priced from the shared file with its ONE rate set, so
+  // the aggregate carries their sum with the same provenance (nested subagent
+  // entries are NOT folded in).
   assert.equal(aggregate.cost.source, 'model_prices.yml')
   assert.match(aggregate.cost.pricing_ref, /^config\/model_prices\.yml@/)
-  close(aggregate.cost.amount_usd, 0.000075, 'peak aggregate')
+  close(aggregate.cost.amount_usd, 0.000075, 'aggregate')
 })
 
 test('collectUsage finds the child session by marker and errors when it is absent', () => {
@@ -344,12 +316,25 @@ test('collectUsage finds the child session by marker and errors when it is absen
   assert.deepEqual(miss.usage, [])
 })
 
-test('the compiled PRICE_TABLE is gone: cost comes from the shared file', () => {
+test('the compiled PRICE_TABLE is gone AND the time-aware layer is gone', () => {
   const usage = readFileSync(new URL('../shared/usage.ts', import.meta.url), 'utf8')
   const pricing = readFileSync(new URL('../shared/pricing.ts', import.meta.url), 'utf8')
   assert.equal(usage.includes('PRICE_TABLE'), false, 'the compiled PRICE_TABLE must be gone from usage.ts')
   assert.match(pricing, /cached_input/, 'the canonical field names come from the shared file')
-  assert.match(pricing, /cache_read/, 'the dsh cache_read -> cached_input mapping stays documented')
+  // No time-aware pricing trace in the CODE (comments may explain the removal).
+  const codeOnly = (text) => text.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n')
+  for (const banned of ['off_peak', 'off-peak', 'offpeak', 'RateClass', 'holiday_dates', 'weekdays_only', 'rate_class', 'call_time']) {
+    assert.equal(
+      codeOnly(usage).includes(banned),
+      false,
+      `usage.ts code must not carry any time-aware pricing trace ('${banned}')`,
+    )
+    assert.equal(
+      codeOnly(pricing).includes(banned),
+      false,
+      `pricing.ts code must not carry any time-aware pricing trace ('${banned}')`,
+    )
+  }
   assert.equal(loadPriceTable().providers.deepseek['deepseek-flash'].cached_input, 0.006)
 })
 
