@@ -3,55 +3,48 @@
  * graph in the RUNNING workstation service, with no container recreate, no
  * service restart and no compose verb.
  *
- * THE DEFECT
- * ----------
- * The harness (dsh) serves the module it imported for a URL for the LIFE of the
- * process. Re-mounting a row at a NEW url re-imports the ENTRY module, but its
- * RELATIVE imports (for example `shared/usage.ts`) resolve to the SAME url and
- * therefore stay CACHED: a `?query` remount refreshes the entry only, not the
- * nested graph. Proven live 2026-10-03: `agent-run` was remounted at
- * `.../index.ts?rev=20261003-pricing` and still emitted the stale nested
- * pricing module.
+ * THE DEFECT (fixed 2026-10-03)
+ * -----------------------------
+ * The previous implementation disposed the row through its own EntryGroup and
+ * re-created it against the Loader tree by hand (`entry.parent.remove` +
+ * `group.create`). In production that re-mounted the ENTRY module but did NOT
+ * re-register the row's tools: `dsh_reload {"id":"agent-run"}` returned
+ * disposed=true, mounted=true, yet `agent_run` DISAPPEARED from the running
+ * facade. Only the harness' own composition path (driven by the watched patch
+ * layer) re-runs a row's `apply`, and that is exactly the path the running
+ * `plugin_remove` / `plugin_add` tools use.
  *
- * THE RECIPE (from @deepseek-ai/dsh-hmr, packages/boot/hmr/src/index.ts:441-511)
- * -----------------------------------------------------------------------------
- * dsh-hmr busts the cache by EVICTION at the SAME url, never with a query. It
- * iterates the plugin dependency closure and calls
- * `Map.prototype.delete.call(this.internal.loadCache, filename)` on Node's
- * INTERNAL ESM loadCache (plus the matching `require.cache` entry), then
- * re-imports the same url. The recipe already ships in this image, but dsh-hmr
- * registers NO tool and its module watch root is empty
- * (packages/bundle/base/cordis.patch.yml:32), so there is no imperative way to
- * fire it. This plugin fires it.
- *
- * WHAT THIS TOOL DOES (ONE call, no manual second step)
- * -----------------------------------------------------
- * 1. resolve the row's current module specifier from the running Loader tree
- *    (fallback: the live config file), unless `module` is given;
- * 2. DISPOSE the row from the running Loader tree (EntryGroup.remove);
- * 3. EVICT every `internal.loadCache` key under the source prefix, plus the
- *    matching `require.cache` entries, exactly dsh-hmr's recipe;
- * 4. RE-MOUNT the row at the SAME specifier (EntryGroup.create), so the entry
- *    AND its nested relative imports import FRESH;
- * 5. return raw JSON { ok, id, module, disposed, mounted, evicted, ... } plus
- *    the tool-name delta.
- *
- * Steps 2+4 use the public Loader tree API (`entry.parent.remove` /
- * `entry.parent.create`), which is exactly the dispose/mount seam plugin-live
- * already drives. If that API is unavailable on a future harness build, the
- * result still reports the eviction and carries a `next` field naming the exact
- * facade calls (`plugin_remove` + `plugin_add` with their JSON bodies) instead
- * of claiming a false success.
- *
- * OPERATOR REQUEST
- * ----------------
- * "an imperative in-image reload command" (telegram, 2026-10-03).
+ * THE FIX
+ * -------
+ * 1. RE-MOUNT THROUGH THE PROVEN SEAM. `dsh_reload` now imports the shared
+ *    primitives and the remove/add seam extracted from `plugin-live`
+ *    (`plugins/plugin-live/live-layer.ts`). `removeRowSeam` drops the row from
+ *    whichever live layers declare it (the watched HOME patch and the managed
+ *    CLI --patch overlay) and waits for the Loader to DISPOSE it;
+ *    `addRowSeam` re-declares the row on the SAME layers with the SAME config
+ *    and waits for the Loader to MOUNT it again. Nothing is hand-rolled against
+ *    the Loader tree.
+ * 2. ASSERT THE POST-CONDITION. The tool-name set AFTER must equal the set
+ *    BEFORE (the SAME `delta` helper plugin-live uses). When a tool is still
+ *    missing, one more explicit remove+add cycle is attempted and the
+ *    post-condition is re-asserted. The result carries tools_before,
+ *    tools_after, tools_added, tools_removed and postcondition_ok.
+ * 3. EVICT THE GRAPH. Before the re-mount, every cached module URL under the
+ *    source prefix is evicted from Node's INTERNAL ESM loadCache (the dsh-hmr
+ *    recipe: `Map.prototype.delete.call`), so the re-import of the ENTRY module
+ *    AND its nested relative imports is a cache miss.
+ * 4. OBSERVE THE FRESH PRICING PROVENANCE. After the re-import the tool result
+ *    carries `pricing: { pricing_ref, source, version }`, read from the freshly
+ *    loaded `shared/pricing.ts` through its exported API
+ *    (`loadPriceTable()` + `aggregateProvenance()`). Nothing is hardcoded: the
+ *    value is read from the same file-driven definition the running usage
+ *    accounting serves.
  *
  * USAGE
  * -----
  *   dsh_reload {"id":"agent-run"}
  *   dsh_reload {"id":"agent-run","module":"/path/to/index.ts?rev=20261003"}
- *   dsh_reload {"id":"agent-run","prefix":"/var/lib/workstation/sources/"}
+ *   dsh_reload {"id":"live-fixture","prefix":"/var/lib/workstation/sources/"}
  *
  * No secrets anywhere. OMNI_DIR is read from the environment with the /opt/omni
  * fallback. ASCII only.
@@ -62,7 +55,25 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+import { defineTool, renderValue } from '../../definitions/tools.ts'
+import {
+  DEFAULT_WAIT_MS,
+  addRowSeam,
+  delta,
+  liveEntry,
+  mounted,
+  removeRowSeam,
+  rowDeclaration,
+  sameModule,
+  toolNames,
+  waitBudget,
+  waitForToolSet,
+  type Config as LiveConfig,
+  type LoaderLike,
+  type PluginContext as LiveContext,
+  type SeamAddResult,
+  type SeamRemoveResult,
+} from '../plugin-live/live-layer.ts'
 
 export const name = 'dsh-reload'
 
@@ -78,59 +89,21 @@ const DEFAULT_CONFIG_RELATIVE = 'config/workstation.yml'
 /** OMNI_DIR fallback when the environment does not name it. */
 const DEFAULT_OMNI_DIR = '/opt/omni'
 
-export interface Config {
+export interface Config extends LiveConfig {
   /** Source prefix whose cached module URLs are evicted (default DEFAULT_PREFIX). */
   prefix?: string
-  /** Absolute path of the live config file used to resolve a row (default $OMNI_DIR/config/workstation.yml). */
-  configFile?: string
 }
 
 // -- structural contracts (this plugin imports nothing from the harness) -----
 
-/** One Loader entry row as `loader.entries()` reports it. */
-interface EntryOptionsLike {
-  id?: unknown
-  name?: unknown
-  config?: unknown
-  inject?: unknown
-  disabled?: unknown
-  group?: unknown
-}
-
-/** The EntryGroup slice this plugin drives (dispose and re-mount seam). */
-interface GroupLike {
-  data?: unknown[]
-  tree?: { write?(): void }
-  create(options: Record<string, unknown>): Promise<unknown>
-  remove(id: string): void
-}
-
-/** One live Loader entry. */
-interface EntryLike {
-  id?: unknown
-  options?: EntryOptionsLike
-  fiber?: { state?: unknown }
-  parent?: GroupLike
-}
-
-/** The Loader service slice this plugin drives. */
-interface LoaderLike {
-  root?: GroupLike
+/** The Loader slice this tool additionally drives: the Node-internal ESM cache. */
+interface ReloadLoaderLike extends LoaderLike {
   internal?: { loadCache?: Map<string, unknown> } | null
-  entries(): Iterable<EntryLike>
-  await?(): Promise<void>
 }
 
-interface ToolsLike {
-  register(def: ToolDefinition): () => void
-  schemas?(): Array<{ name?: unknown }>
-}
-
-interface PluginContext {
-  tools: ToolsLike
-  loader: LoaderLike
-  effect(callback: () => () => void): void
-  logger?: { info?(...args: unknown[]): void; warn?(...args: unknown[]): void }
+/** The context this tool needs: the shared seam plus the internal loadCache. */
+interface ReloadContext extends LiveContext {
+  loader: ReloadLoaderLike
 }
 
 // -- small helpers -----------------------------------------------------------
@@ -138,40 +111,6 @@ interface PluginContext {
 /** A non-empty string, else undefined. */
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-/** The declared id of a Loader entry, preferring the patch-declared id. */
-function entryId(entry: EntryLike): string | undefined {
-  return readString(entry.options?.id) ?? readString(entry.id)
-}
-
-/** The live Loader entry for an id, when the running tree holds one. */
-function findEntry(loader: LoaderLike, id: string): EntryLike | undefined {
-  for (const entry of loader.entries()) {
-    if (entryId(entry) === id) return entry
-  }
-  return undefined
-}
-
-/** The registered tool names, best effort (the registry is the observable surface). */
-function toolNames(tools: ToolsLike): string[] {
-  try {
-    return (tools.schemas?.() ?? [])
-      .map((schema) => schema?.name)
-      .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
-  } catch {
-    return []
-  }
-}
-
-/** The tool-name delta between two snapshots (added and removed, sorted). */
-function delta(before: readonly string[], after: readonly string[]): { added: string[]; removed: string[] } {
-  const beforeSet = new Set(before)
-  const afterSet = new Set(after)
-  return {
-    added: after.filter((entry) => !beforeSet.has(entry)).sort(),
-    removed: before.filter((entry) => !afterSet.has(entry)).sort(),
-  }
 }
 
 /** A required non-empty string parameter, or a readable refusal. */
@@ -284,7 +223,7 @@ function toUrlPrefix(prefix: string): string {
  * eviction, so a build without Node internals must fail BEFORE anything is
  * disposed rather than remount into a still-cached graph.
  */
-function assertLoadCache(loader: LoaderLike): Map<string, unknown> {
+function assertLoadCache(loader: ReloadLoaderLike): Map<string, unknown> {
   const cache = loader.internal?.loadCache
   if (cache === undefined || cache === null || typeof (cache as { get?: unknown }).get !== 'function') {
     throw new Error(
@@ -320,42 +259,25 @@ export function evictPrefix(prefix: string, cache: Map<string, unknown>): { urls
   return { urls, cjs }
 }
 
-/** Dispose the row through its own EntryGroup (the harness dispose seam). */
-function disposeEntry(entry: EntryLike, fallbackId: string): boolean {
-  const parent = entry.parent
-  if (parent === undefined || typeof parent.remove !== 'function') return false
-  const localId = readString(entry.options?.id) ?? fallbackId
-  parent.remove(localId)
+/** The pricing provenance of the freshly loaded shared module, best effort. */
+async function pricingProvenance(): Promise<{ pricing: { pricing_ref: string | null; source: string; version: string }; error?: string }> {
   try {
-    parent.tree?.write?.()
-  } catch {
-    // an in-memory tree writes as a no-op, or not at all
+    // A relative import inside the plugin: after the eviction above it is a
+    // cache miss and re-imports fresh, together with the rest of the graph.
+    const module = await import('../../shared/pricing.ts')
+    const table = module.loadPriceTable()
+    const provenance = module.aggregateProvenance(table)
+    return { pricing: { pricing_ref: provenance.pricing_ref, source: provenance.source, version: table.version } }
+  } catch (error) {
+    return { pricing: { pricing_ref: null, source: 'unavailable', version: '' }, error: String(error) }
   }
-  return true
 }
 
-/**
- * Re-mount one row into its EntryGroup at the same specifier. Mirrors
- * `EntryTree.create`: the options join the group data (so the next reconcile
- * sees the row) and `group.create` imports the module FRESH (the cache was just
- * evicted).
- */
-async function remountEntry(group: GroupLike, options: Record<string, unknown>): Promise<boolean> {
-  if (Array.isArray(group.data)) group.data.push(options)
-  try {
-    group.tree?.write?.()
-  } catch {
-    // an in-memory tree writes as a no-op, or not at all
-  }
-  await group.create(options)
-  return true
-}
-
-export function apply(ctx: PluginContext, config: Config = {}): void {
+export function apply(ctx: ReloadContext, config: Config = {}): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'dsh_reload',
     description:
-      'reloads ONE running dsh plugin row in place: disposes it from the live Loader tree, evicts the Node ESM loadCache for the whole plugin-source graph (dsh-hmr recipe) and re-mounts the row at the SAME specifier, so nested relative imports re-resolve; one call, no restart',
+      'reloads ONE running dsh plugin row in place through the SAME dispose+mount seam plugin_remove/plugin_add use: evicts the Node ESM loadCache for the whole plugin-source graph (dsh-hmr recipe), disposes and re-declares the row on its live layer(s), asserts the tool set is unchanged and reports the fresh pricing provenance; one call, no restart',
     parameters: {
       id: { type: 'string', description: 'cordis loader row id to reload, e.g. "agent-run"', required: true },
       module: { type: 'string', description: 'explicit module specifier to remount (default: the row current specifier, then the live config file)' },
@@ -366,13 +288,14 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       const explicit = optionalParam(params, 'module')
       const configured = config.prefix !== undefined && config.prefix.trim().length > 0 ? config.prefix.trim() : undefined
       const prefix = optionalParam(params, 'prefix') ?? configured ?? DEFAULT_PREFIX
+      const budget = waitBudget(params, config.waitMs ?? DEFAULT_WAIT_MS)
 
       // Fail before disposing when the eviction itself is impossible.
       const cache = assertLoadCache(ctx.loader)
 
       // 1. resolve the specifier: explicit param, then the live Loader tree,
       //    then the live config file.
-      const entry = findEntry(ctx.loader, id)
+      const entry = liveEntry(ctx.loader, id)
       let module = explicit
       let resolvedFrom: 'param' | 'loader' | 'config-file' = 'param'
       if (module === undefined && entry !== undefined) {
@@ -390,62 +313,114 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       }
 
       const beforeTools = toolNames(ctx.tools)
-      const parent = entry?.parent
+      const declaration = rowDeclaration(ctx, config, id)
+      const declaredInLiveLayer = declaration.live || declaration.config
+      // The Loader reports a resolved file URL while the patch may declare an
+      // absolute path. Re-declare the DECLARED specifier when it names the same
+      // module, so a reload does not rewrite the row's form.
+      const remountModule = declaration.module !== undefined && sameModule(declaration.module, module) ? declaration.module : module
 
-      // 2. dispose the old generation.
-      const disposed = entry === undefined ? false : disposeEntry(entry, id)
-
-      // 3. evict the whole graph under the prefix at the SAME urls.
+      // 2. EVICT the whole graph under the prefix at the SAME urls, BEFORE the
+      //    remove+add cycle, so the re-import is a cache miss.
       const evicted = evictPrefix(prefix, cache)
 
-      // 4. re-mount at the SAME specifier; the import is now a cache miss.
-      let mounted = false
-      let remountError: string | undefined
-      const target = parent ?? ctx.loader.root
-      if (target === undefined) {
-        remountError = 'the running Loader exposes no root group to mount the row into'
+      // 3. RE-MOUNT through the proven seam: remove (both live layers, wait for
+      //    dispose) then add back on the SAME layer(s), wait for mount. A row
+      //    that no live layer declares cannot be disposed by this tool, so it is
+      //    reported honestly instead of being re-created against the tree.
+      let remove: SeamRemoveResult
+      let add: SeamAddResult
+      if (declaredInLiveLayer) {
+        remove = await removeRowSeam(ctx, config, id, budget)
+        add = await addRowSeam(ctx, config, id, remountModule, declaration, budget)
       } else {
-        const nextOptions: Record<string, unknown> = { ...(entry?.options ?? {}), id, name: module }
-        try {
-          mounted = await remountEntry(target, nextOptions)
-        } catch (error) {
-          remountError = String(error)
+        const current = liveEntry(ctx.loader, id)
+        remove = {
+          liveDeclared: false,
+          configDeclared: false,
+          declaredRowRemoved: false,
+          configFileChanged: false,
+          configForm: null,
+          backupFile: null,
+          disposed: current === undefined,
+          waitedMs: 0,
+        }
+        add = {
+          liveDeclared: false,
+          configDeclared: false,
+          declared: false,
+          overlayFile: null,
+          backupFile: null,
+          mounted: mounted(current),
+          fiberState: current === undefined ? null : String(current.fiber?.state ?? 'none'),
+          waitedMs: 0,
         }
       }
+      await waitForToolSet(ctx, beforeTools, Math.min(budget, 3000))
+      let afterTools = toolNames(ctx.tools)
+      let changed = delta(beforeTools, afterTools)
+      let postconditionOk = changed.added.length === 0 && changed.removed.length === 0
 
-      try {
-        await ctx.loader.await?.()
-      } catch {
-        // reporting is best effort
+      // 4. FALLBACK: if a tool is still missing, one more explicit remove+add
+      //    cycle (with a fresh eviction) and re-assert.
+      let fallbackUsed = false
+      if (declaredInLiveLayer && !postconditionOk) {
+        fallbackUsed = true
+        evictPrefix(prefix, cache)
+        remove = await removeRowSeam(ctx, config, id, budget)
+        add = await addRowSeam(ctx, config, id, remountModule, declaration, budget)
+        await waitForToolSet(ctx, beforeTools, Math.min(budget, 3000))
+        afterTools = toolNames(ctx.tools)
+        changed = delta(beforeTools, afterTools)
+        postconditionOk = changed.added.length === 0 && changed.removed.length === 0
       }
-      const afterTools = toolNames(ctx.tools)
-      const changed = delta(beforeTools, afterTools)
-      const current = findEntry(ctx.loader, id)
+
+      // 5. OBSERVE the pricing provenance of the module graph the RUNNING
+      //    process now serves, read through the shared module API.
+      const pricingOutcome = await pricingProvenance()
 
       const result: Record<string, unknown> = {
-        ok: mounted,
+        ok: add.mounted && postconditionOk,
         id,
-        module,
+        module: remountModule,
+        resolved_module: module,
         resolved_from: resolvedFrom,
         prefix,
-        disposed,
-        mounted,
+        declared_before: { live: declaration.live, config: declaration.config },
+        disposed: remove.disposed,
+        mounted: add.mounted,
+        decl: {
+          removed_live: remove.liveDeclared,
+          removed_config: remove.configDeclared,
+          added_live: add.liveDeclared,
+          added_config: add.configDeclared,
+          config_file: add.overlayFile ?? declaration.configFile,
+          backup_file: add.backupFile,
+        },
         evicted: evicted.urls,
         evicted_count: evicted.urls.length,
         require_cache_evicted: evicted.cjs,
-        fiber_state: current === undefined ? null : String(current.fiber?.state ?? 'none'),
+        fiber_state: add.fiberState,
         tools_before: beforeTools,
         tools_after: afterTools,
         tools_added: changed.added,
         tools_removed: changed.removed,
+        postcondition_ok: postconditionOk,
+        fallback_used: fallbackUsed,
+        pricing: pricingOutcome.pricing,
       }
-      if (!mounted) {
+      if (pricingOutcome.error !== undefined) result.pricing_error = pricingOutcome.error
+      if (!add.mounted) {
         result.next = [
           { tool: 'plugin_remove', params: { id } },
-          { tool: 'plugin_add', params: { id, module } },
+          { tool: 'plugin_add', params: { id, module: remountModule } },
         ]
-        result.next_note = 'in-process dispose+remount did not complete on this harness build; apply the facade calls in order'
-        if (remountError !== undefined) result.error = remountError
+        result.next_note = 'the shared dispose+mount seam did not report a mount on this harness build; apply the facade calls in order'
+      }
+      if (!postconditionOk) {
+        result.warning = 'postcondition failed: the tool-name set changed across the reload'
+      } else if (!declaration.live && !declaration.config) {
+        result.warning = 'the row is not declared in a live layer this tool owns (HOME patch or CLI --patch overlay); it cannot be disposed and re-mounted'
       }
       return result
     },

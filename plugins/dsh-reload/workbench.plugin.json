@@ -1,7 +1,7 @@
 {
   "name": "dsh-reload",
   "version": "0.1.0",
-  "description": "Imperative in-process reload of ONE running dsh plugin row: disposes it from the live Loader tree, evicts Node's internal ESM loadCache for the whole plugin-source graph (the @deepseek-ai/dsh-hmr recipe) and re-mounts the row at the SAME specifier, so nested relative imports re-resolve. One call, no container recreate, no service restart. Tool: 'dsh_reload'",
+  "description": "Imperative in-process reload of ONE running dsh plugin row through the PROVEN dispose+mount seam plugin_remove/plugin_add use (plugins/plugin-live/live-layer.ts): evicts Node's internal ESM loadCache for the whole plugin-source graph (the @deepseek-ai/dsh-hmr recipe), removes and re-declares the row on its live layer(s), asserts the tool-name set is unchanged (postcondition_ok, with one explicit remove+add fallback) and reports the freshly loaded pricing provenance. One call, no container recreate, no service restart. Tool: 'dsh_reload'",
   "entry": "index.ts",
   "config": {
     "type": "object",
