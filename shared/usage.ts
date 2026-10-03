@@ -30,28 +30,33 @@
 //
 // COST
 // ----
-// Cost is computed by THIS MODULE from the fixed PRICE_TABLE below (its source
-// of truth), never estimated by an agent: costOf() answers
-// `{ amount_usd, is_estimate: true, source: 'price_table_v1', pricing_ref }`
-// for a route the table prices, and `cost: null` otherwise. The table is a
-// COMPILED CONSTANT; changing a price is a code change with provenance, not a
-// runtime guess.
+// Cost is computed by THIS MODULE from the SHARED external definition file
+// `{OMNI_DIR}/config/model_prices.yml` (`shared/pricing.ts`), never estimated by
+// an agent: costOf() answers
+// `{ amount_usd, is_estimate: true, source, pricing_ref, rate_class, call_time }`
+// for a route the file prices, and `cost: null` otherwise. Peak vs off-peak is
+// decided from the CALL time (UTC) against the file's `off_peak:` calendar, so
+// a call inside DeepSeek's off-peak window is billed at the off-peak rate.
+// Editing the file (a rate or a window) changes future costs with no rebuild,
+// no restart and no release.
 
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
+import { aggregateProvenance, costOf, loadPriceTable, type UsageCost } from './pricing.ts'
 
 /** The session log filename of the JSONL v4 backend. */
 export const SESSION_LOG_NAME = 'session.v4.jsonl.zstd'
 
-/** One per-call cost block. `amount_usd` stays null when unpriced. */
-export interface UsageCost {
-  amount_usd: number | null
-  is_estimate: boolean
-  source: string
-  pricing_ref: string | null
-}
+/**
+ * One per-call cost block. `amount_usd` stays null when unpriced, and for a
+ * priced call it carries `rate_class` (peak / off-peak) plus the `call_time` it
+ * was derived from. Defined in `shared/pricing.ts` (the reader of the shared
+ * `{OMNI_DIR}/config/model_prices.yml`) and re-exported here so every caller
+ * keeps importing it from `shared/usage.ts`.
+ */
+export type { UsageCost } from './pricing.ts'
 
 /**
  * The FIXED per-call dict every agent tool appends. Unknown values are null,
@@ -82,58 +87,24 @@ export interface UsageReport {
   sessionLog?: string
 }
 
-/** Version tag of the fixed price table; every computed cost cites it. */
-export const PRICE_TABLE_VERSION = 'price_table_v1'
-
-/**
- * FIXED deployment price table, keyed by `<provider>/<model>`, USD per
- * 1,000,000 tokens. This table is the SOURCE OF TRUTH for `cost`: the plugin
- * computes from it and an agent never supplies a price. A route absent from the
- * table answers `cost: null` (unknown price is never guessed).
- *
- * Rates are the vendors' published peak (standard) list prices, rounded, read
- * 2026-09-30:
- *   - DeepSeek V4.1 Flash (`deepseek-official/deepseek-flash` and
- *     `deepseek-official/deepseek-v4.1-flash`): $0.30 input / $1.20 output /
- *     $0.006 cache-hit per 1M (off-peak is half; the table keeps the peak rate).
- *   - DeepSeek V4 Pro (`deepseek-official/deepseek-v4-pro`): $1.32 input /
- *     $3.96 output / $0.044 cache-hit per 1M.
- *   - Gemini 2.5 Flash (`google/gemini-2.5-flash`): $0.30 input / $2.50 output /
- *     $0.03 cached input per 1M.
- */
-export const PRICE_TABLE: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }> = {
-  'deepseek-official/deepseek-flash': { input: 0.3, output: 1.2, cache_read: 0.006 },
-  'deepseek-official/deepseek-v4-flash': { input: 0.3, output: 1.2, cache_read: 0.006 },
-  'deepseek-official/deepseek-v4.1-flash': { input: 0.3, output: 1.2, cache_read: 0.006 },
-  'deepseek-official/deepseek-v4-pro': { input: 1.32, output: 3.96, cache_read: 0.044 },
-  'google/gemini-2.5-flash': { input: 0.3, output: 2.5, cache_read: 0.03 },
-}
-
-/** The pricing_ref every computed cost cites: the table and its version. */
-export const PRICE_TABLE_REF = `shared/usage.ts#PRICE_TABLE@${PRICE_TABLE_VERSION}`
-
-/** The USD price of one model route, or undefined when unpriced. */
-export function priceOf(provider: string | null, model: string | null): { input: number; output: number; cache_read?: number; cache_write?: number } | undefined {
-  if (provider === null || model === null) return undefined
-  return PRICE_TABLE[`${provider}/${model}`]
-}
-
-/** The cost block for one call: computed from PRICE_TABLE, or null when unpriced. */
-export function costOf(provider: string | null, model: string | null, tokens: { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null }): UsageCost | null {
-  const price = priceOf(provider, model)
-  if (price === undefined) return null
-  const per = 1_000_000
-  const input = (tokens.input ?? 0) / per * price.input
-  const output = (tokens.output ?? 0) / per * price.output
-  const cacheRead = (tokens.cacheRead ?? 0) / per * (price.cache_read ?? price.input)
-  const cacheWrite = (tokens.cacheWrite ?? 0) / per * (price.cache_write ?? price.input)
-  return {
-    amount_usd: Math.round((input + output + cacheRead + cacheWrite) * 1e9) / 1e9,
-    is_estimate: true,
-    source: PRICE_TABLE_VERSION,
-    pricing_ref: PRICE_TABLE_REF,
-  }
-}
+// The SHARED price definition: `{OMNI_DIR}/config/model_prices.yml`, read by
+// `shared/pricing.ts` (the SAME file, provider -> model hierarchy and canonical
+// field names the omniagent core uses). Re-exported here so every caller keeps
+// importing the cost helpers from `shared/usage.ts`.
+export {
+  aggregateProvenance,
+  contentHash,
+  costOf,
+  loadPriceTable,
+  parsePriceYaml,
+  priceFilePath,
+  priceOf,
+  rateClassAt,
+  PRICES_FILE,
+  PRICES_RELATIVE,
+  PRICES_SOURCE,
+} from './pricing.ts'
+export type { PriceTable, RateClass, Rates } from './pricing.ts'
 
 /** A short unique token embedded in a child briefing so its session is identifiable. */
 export function usageToken(): string {
@@ -398,6 +369,27 @@ function sum(...values: Array<number | null>): number | null {
   return seen ? total : null
 }
 
+/**
+ * The UTC timestamp of one session event, in milliseconds, or null when the log
+ * carries none (then the cost falls back to the PEAK rate, never an error).
+ *
+ * Accepts an epoch number (SECONDS or milliseconds) or a parseable date string
+ * under the usual harness keys. The `session` header's `createdAt` is the last
+ * resort, so a call in a log without per-event timestamps is still priced at
+ * (approximately) its own time rather than at report time.
+ */
+export function eventTimeMs(event: Record<string, unknown>): number | null {
+  for (const key of ['timestamp', 'time', 'ts', 'createdAt', 'at']) {
+    const raw = event[key]
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw > 1e11 ? raw : raw * 1000
+    if (typeof raw === 'string' && raw.length > 0) {
+      const parsed = Date.parse(raw)
+      if (!Number.isNaN(parsed)) return parsed
+    }
+  }
+  return null
+}
+
 /** Build one per-call dict from one `assistant/message` usage block. */
 export function callOf(
   agent: string,
@@ -405,6 +397,7 @@ export function callOf(
   provider: string | null,
   model: string | null,
   details: Record<string, unknown>,
+  atMs: number | null = null,
 ): UsageCall {
   const input = num(usage.inputTokens)
   const output = num(usage.outputTokens)
@@ -419,7 +412,7 @@ export function callOf(
     cached_input_tokens: cacheRead,
     cache_write_tokens: cacheWrite,
     reasoning_tokens: num(usage.reasoningTokens),
-    cost: costOf(provider, model, { input, output, cacheRead, cacheWrite }),
+    cost: costOf(provider, model, { input, output, cacheRead, cacheWrite }, atMs),
     provider,
     model,
     request_id: null,
@@ -529,7 +522,7 @@ export function usageFromSession(logPath: string, agent: string): UsageReport {
         const messageId = str((message as { id?: unknown }).id)
         if (messageId !== null) details.message_id = messageId
       }
-      const call = callOf(agent, usageBlock as Record<string, unknown>, source.provider, source.model, details)
+      const call = callOf(agent, usageBlock as Record<string, unknown>, source.provider, source.model, details, eventTimeMs(event))
       usage.push(call)
       if (call.cost !== null) {
         pricedCalls += 1
@@ -553,8 +546,9 @@ export function usageFromSession(logPath: string, agent: string): UsageReport {
   // subagent arrays are separate entries and are never folded in). It stays
   // null when any own call is unpriced, so a partial sum is never presented as
   // the total.
+  const provenance = aggregateProvenance(loadPriceTable())
   const aggregateCost: UsageCost | null = llmCalls > 0 && pricedCalls === llmCalls
-    ? { amount_usd: Math.round(costSum * 1e9) / 1e9, is_estimate: true, source: PRICE_TABLE_VERSION, pricing_ref: PRICE_TABLE_REF }
+    ? { amount_usd: Math.round(costSum * 1e9) / 1e9, is_estimate: true, source: provenance.source, pricing_ref: provenance.pricing_ref }
     : null
   const aggregate: UsageCall = {
     agent,
