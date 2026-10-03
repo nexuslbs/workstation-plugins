@@ -46,7 +46,7 @@
 // exit code != 0, and the tool says so instead of pretending to have searched.
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 import { defineTool, renderValue, type ContentBlock, type ToolDefinition } from '../../definitions/tools.ts'
@@ -245,6 +245,23 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   const declared = Array.isArray(config.roles) ? config.roles.filter((entry) => str(entry?.role) !== undefined) : []
 
+  /**
+   * The dsh roles this deployment supports: the directories under the role tree
+   * (`roleProfilesDir`), the SAME source the canonical provisioner and this
+   * plugin's own generic tool description name. Read at call time so a role
+   * added to the user repo is accepted without reloading the plugin.
+   */
+  const supportedRoles = (): string[] => {
+    try {
+      return readdirSync(roleProfilesDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('_'))
+        .map((entry) => entry.name)
+        .sort()
+    } catch {
+      return []
+    }
+  }
+
   // The delegation depth of THIS process. A worker launched by a delegated call
   // inherits it through the environment; at maxDepth a profile registers no
   // delegation tool at all (no runaway chains).
@@ -381,6 +398,10 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           const requestedTimeout = int(params.timeoutSecs)
           return await call({
             objective,
+            // The generic tool's `role` parameter MUST survive this wrapper: the
+            // generic handler reads it to pick the profile to run. Dropping it
+            // silently rerouted every delegation to `defaultRole`.
+            ...(str(params.role) === undefined ? {} : { role: str(params.role) }),
             ...(str(params.project) === undefined ? {} : { project: str(params.project) }),
             ...(requestedTimeout === undefined ? {} : { timeoutSecs: requestedTimeout }),
             ...(timeoutFor === undefined ? {} : {}),
@@ -440,6 +461,12 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
       },
       async (params, exec) => {
         const role = str(params.role) ?? defaultRole
+        // Fail CLOSED on an unsupported role: never silently run some other
+        // profile. The valid set is the role tree the provisioner reads.
+        const roles = supportedRoles()
+        if (!roles.includes(role)) {
+          throw new Error(`${genericTool}: unsupported role '${role}'; valid roles are: ${roles.length === 0 ? `(none found under ${roleProfilesDir})` : roles.join(', ')}`)
+        }
         const toolName = `${genericTool}:${role}`
         return await delegate(toolName, role, String(params.objective), {
           project: str(params.project),
