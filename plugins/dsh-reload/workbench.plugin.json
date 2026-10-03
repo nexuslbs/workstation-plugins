@@ -1,0 +1,20 @@
+{
+  "name": "dsh-reload",
+  "version": "0.1.0",
+  "description": "Imperative in-process reload of ONE running dsh plugin row: disposes it from the live Loader tree, evicts Node's internal ESM loadCache for the whole plugin-source graph (the @deepseek-ai/dsh-hmr recipe) and re-mounts the row at the SAME specifier, so nested relative imports re-resolve. One call, no container recreate, no service restart. Tool: 'dsh_reload'",
+  "entry": "index.ts",
+  "config": {
+    "type": "object",
+    "description": "All fields have production-safe defaults.",
+    "properties": {
+      "prefix": {
+        "type": "string",
+        "description": "Source prefix whose cached module URLs are evicted (default /var/lib/workstation/sources/)."
+      },
+      "configFile": {
+        "type": "string",
+        "description": "Absolute path of the live config file used to resolve a row when the Loader tree has no entry (default $OMNI_DIR/config/workstation.yml, OMNI_DIR falling back to /opt/omni)."
+      }
+    }
+  }
+}
