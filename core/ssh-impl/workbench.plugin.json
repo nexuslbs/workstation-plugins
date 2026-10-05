@@ -1,0 +1,36 @@
+{
+  "name": "ssh-impl",
+  "version": "0.1.0",
+  "description": "The ssh@1 provider `ssh-cli`: runs ONE command string on a REMOTE machine through the OpenSSH client. One argv array, no host shell; key material is a credential NAME resolved at call time into a 0600 temp file that lives for exactly one call. A mounted row config without a host is legal and fails per call, never at load.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "ssh", "version": 1, "provider": "ssh-cli" }],
+  "policies": {
+    "ssh": { "provide": "ssh@1", "require": "ssh@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The row config may omit `host` (it then loads and every call answers a structured invalid-config). Values are never inline key material: `privateKeyName` is a credential NAME.",
+    "properties": {
+      "host": {
+        "type": "string",
+        "description": "Target in the portable [user@]host[:port] form (the port moves into ssh -p)."
+      },
+      "privateKeyName": {
+        "type": "string",
+        "description": "Credential NAME whose VALUE is a private key; resolved at call time through ctx.credentials and materialised into a 0600 temp file for one call only. NEVER a path and NEVER a value."
+      },
+      "configFilePath": {
+        "type": "string",
+        "description": "Optional ssh config file passed as -F <path> (aliases/options)."
+      },
+      "binary": { "type": "string", "default": "ssh", "description": "ssh executable resolved on PATH." },
+      "timeoutMs": { "type": "number", "default": 30000, "description": "Per-call timeout; the process is killed on expiry." },
+      "maxOutputBytes": { "type": "number", "default": 4194304, "description": "Output cap in bytes, applied to stdout and stderr separately." },
+      "options": {
+        "type": "array",
+        "description": "Extra ssh options as verbatim argv entries (for example -o StrictHostKeyChecking=accept-new)."
+      }
+    }
+  }
+}

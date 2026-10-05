@@ -1,0 +1,28 @@
+{
+  "name": "ssh-tools",
+  "version": "0.1.0",
+  "description": "External ssh CONSUMER: exposes the ssh transport (ssh@1) as the tools ssh_run, ssh_status, ssh_copy_to and ssh_copy_from - provider agnostic, it only touches ctx.ssh. host is a required per-call parameter; the key is a credential NAME.",
+  "entry": "index.ts",
+  "capabilities": ["tool:ssh_run", "tool:ssh_status", "tool:ssh_copy_to", "tool:ssh_copy_from"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "privateKeyName": {
+        "type": "string",
+        "description": "Credential NAME used when a tool call passes no `credential` parameter. NEVER a path and NEVER a value."
+      },
+      "configFilePath": {
+        "type": "string",
+        "default": "/opt/omni/data/ssh/config",
+        "description": "ssh config file passed as -F <path> on every call."
+      },
+      "timeoutMs": { "type": "number", "default": 30000, "description": "Default per-call timeout." },
+      "maxOutputBytes": { "type": "number", "default": 4194304, "description": "Default output cap in bytes." },
+      "maxCopyBytes": {
+        "type": "number",
+        "default": 49152,
+        "description": "Transfer bound for ssh_copy_to / ssh_copy_from in bytes (hard cap 65536; base64 must fit one argv element)."
+      }
+    }
+  }
+}

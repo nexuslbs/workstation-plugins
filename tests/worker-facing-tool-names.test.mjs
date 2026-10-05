@@ -25,6 +25,7 @@ import { apply as applySms } from '../plugins/sms-tools/index.ts'
 import { apply as applyTotp } from '../plugins/totp-tools/index.ts'
 import { apply as applyWebSearch } from '../plugins/web-search-tools/index.ts'
 import { apply as applyToolsTyped } from '../plugins/tools-typed/index.ts'
+import { apply as applySsh } from '../plugins/ssh-tools/index.ts'
 
 /** The model-facing name constraint enforced by the model provider. */
 const LEGAL = /^[a-zA-Z0-9_-]+$/
@@ -36,6 +37,7 @@ const TOOL_NAMES = {
   totp: ['totp_code', 'totp_list'],
   'web-search': ['web_search_grounded', 'web_search_providers'],
   'tools-typed': ['jq_query', 'python_run'],
+  ssh: ['ssh_copy_from', 'ssh_copy_to', 'ssh_run', 'ssh_status'],
 }
 
 const APPLY = {
@@ -44,6 +46,7 @@ const APPLY = {
   totp: applyTotp,
   'web-search': applyWebSearch,
   'tools-typed': applyToolsTyped,
+  ssh: applySsh,
 }
 
 /**
