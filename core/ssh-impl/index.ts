@@ -16,8 +16,11 @@
 //
 // KEY MATERIAL BY CREDENTIAL NAME: `privateKeyName` is a credential NAME, never
 // a path and never a value. It is resolved at CALL time through
-// `ctx.credentials.resolve({ name })` (mirroring core/email-himalaya/index.ts:193
-// and core/totp-rfc6238/index.ts:465), written to a fresh 0600 temp file that
+// `ctx.credentials.resolve(name)` with the NAME STRING (mirroring
+// core/email-himalaya/index.ts:193, core/totp-rfc6238/index.ts:465 and
+// core/gemini-grounded-search/index.ts:238): the harness `CredentialRef` is a
+// BRANDED STRING and the local provider does a string-keyed map lookup, so an
+// object argument always misses. The resolved value is written to a fresh 0600 temp file that
 // lives for exactly ONE call, passed as `-i <path>` with `IdentitiesOnly=yes`,
 // and removed in a `finally` block on EVERY return path (success, failure,
 // timeout). The value is never logged, never written outside that temp dir, and
@@ -108,7 +111,12 @@ async function materializeKey(
   }
   let resolution: { value?: string } | undefined
   try {
-    resolution = await credentials.resolve({ name: credentialName })
+    // The harness `CredentialRef` is a BRANDED STRING and the local provider
+    // does `this.values.get(ref)` on a `Map<string, string>`, so the NAME
+    // STRING is the only spelling that resolves (an object always misses).
+    // This matches core/email-himalaya, core/totp-rfc6238 and
+    // core/gemini-grounded-search.
+    resolution = await credentials.resolve(credentialName)
   } catch (error) {
     throw new ServiceError(
       'not-configured',

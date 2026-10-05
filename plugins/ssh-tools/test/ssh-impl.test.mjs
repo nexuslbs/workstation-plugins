@@ -118,7 +118,9 @@ test('privateKeyName resolves at CALL time into a 0600 temp file removed after t
     runProcess: runner,
     credentialsOf: () => ({
       resolve: async (ref) => {
-        assert.deepEqual(ref, { name: 'SSH_PRIVATE_KEY' })
+        // The harness CredentialRef is a BRANDED STRING; the provider must pass
+        // the NAME STRING (an object key misses the string-keyed store).
+        assert.equal(ref, 'SSH_PRIVATE_KEY')
         return { value: FAKE_KEY }
       },
     }),
@@ -134,6 +136,51 @@ test('privateKeyName resolves at CALL time into a 0600 temp file removed after t
   assert.ok(record[0].argv.includes('IdentitiesOnly=yes'))
   assert.ok(!JSON.stringify(record[0].argv).includes(FAKE_KEY), 'the key VALUE must never reach argv')
   assert.ok(!JSON.stringify(record[0].options).includes(FAKE_KEY), 'the key VALUE must never reach the runner options')
+})
+
+// REGRESSION (unit-e acceptance, 2026-10-05): the provider used to call
+// `ctx.credentials.resolve({ name: credentialName })`. The harness CredentialRef
+// is a BRANDED STRING and its local provider does `this.values.get(ref)` on a
+// `Map<string, string>`, so the OBJECT key always missed and EVERY ssh call
+// failed at stage `ssh.credentials` before any transport. This fake store keys
+// STRICTLY on strings: an object argument misses, so the old code cannot pass.
+test('REGRESSION: the credential NAME resolves through a STRING-KEYED store and the argv is exact', async () => {
+  const FAKE_KEY = 'FAKE-REGRESSION-KEY-MATERIAL-do-not-use'
+  // The exact lookup shape of credentials-local: Map<string, string>, get(ref).
+  const store = new Map([['SSH_PRIVATE_KEY', FAKE_KEY]])
+  const seen = []
+  const record = []
+  const { ctx } = makeProviderContext()
+  const service = createSshService({ host: 'h.example', privateKeyName: 'SSH_PRIVATE_KEY' }, ctx, {
+    runProcess: async (argv, options) => {
+      record.push({ argv, options })
+      return { output: 'ok\n', code: 0, stderr: '', durationMs: 2, truncated: false, timedOut: false }
+    },
+    credentialsOf: () => ({
+      resolve: async (ref) => {
+        seen.push(ref)
+        // The harness reference is a branded string; the object form is NOT a
+        // key of the store and must miss.
+        assert.equal(typeof ref, 'string', 'the credential must be passed as the NAME STRING, not an object')
+        return store.has(ref) ? { value: store.get(ref) } : undefined
+      },
+    }),
+  })
+
+  const result = await service.run('true')
+  assert.equal(result.code, 0)
+  assert.deepEqual(seen, ['SSH_PRIVATE_KEY'], 'resolve() must be called once with the NAME STRING')
+  assert.equal(record.length, 1, 'a string-keyed lookup must resolve and start exactly one child')
+
+  const { argv, options } = record[0]
+  const keyIndex = argv.indexOf('-i')
+  assert.ok(keyIndex >= 0, 'the resolver value must be materialised into an -i key path')
+  const keyPath = argv[keyIndex + 1]
+  assert.match(keyPath, /ssh-impl-key-.+\/id_key$/, 'the key path must be the per-call temp file')
+  assert.deepEqual(argv, ['ssh', '-i', keyPath, '-o', 'IdentitiesOnly=yes', 'h.example', "sh -c 'true'"])
+  assert.equal(options.stage, 'ssh.run')
+  assert.ok(!JSON.stringify(argv).includes(FAKE_KEY), 'the key VALUE must never reach argv')
+  assert.ok(!fs.existsSync(keyPath), 'the key file must be removed after the call')
 })
 
 test('the temp key is removed even when the child FAILS', async () => {
