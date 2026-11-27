@@ -62,7 +62,7 @@
 // leaves its accounting behind. The additive `_meta` block returned to the caller
 // is unchanged and never becomes model-facing content.
 
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
@@ -229,6 +229,39 @@ function listSessions(sessionsDir: string, bucket: string): Set<string> {
 }
 
 /**
+ * SIGKILL the WHOLE process group of a spawned worker, not just the direct child.
+ *
+ * The dsh CLI re-execs into a worker process, so the process that actually spends
+ * the tokens/RSS is usually a GRANDCHILD. `child.kill('SIGKILL')` only signals the
+ * direct child, which let the real worker survive as an orphan reparented to PID 1
+ * and hold its RSS until the container was recreated: dispatch
+ * `developer-ai-20261127-141436-hfjri` (project ai, unit A26) still had its
+ * `node .../bin.js developer [dsh-session ...]` alive three days later at 428 MB,
+ * which helped exhaust the harness memory cap and made the cgroup OOM killer
+ * SIGKILL the NEW workers (`exitCode: null`, no session dir, no artifact - thread
+ * 5935, oom_kill 262).
+ *
+ * `run()` therefore spawns with `detached: true`, which makes the child a process
+ * GROUP LEADER (pgid === pid): a negative pid signals every process in the group.
+ * The fallback keeps the call meaningful if the group is already gone (ESRCH) or
+ * the child never became a leader.
+ */
+function killGroup(child: ChildProcess): void {
+  const pid = child.pid
+  // pid 0/1 would make `-pid` target the caller's own group or everything.
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return
+  try {
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // already dead: nothing left to signal
+    }
+  }
+}
+
+/**
  * Run one command to completion, capturing both streams (never rejecting on a
  * non-zero exit).
  *
@@ -236,24 +269,35 @@ function listSessions(sessionsDir: string, bucket: string): Set<string> {
  * the HTTP client that dispatched this worker went away, i.e. the omniagent
  * stopped the thread - the spawned dsh worker is SIGKILLed so it stops spending
  * tokens instead of running on with no consumer left.
+ *
+ * Every kill path (timeout, abort, and the exit hook that reaps survivors) goes
+ * through `killGroup()`, so the re-exec'd worker dies with its dispatch instead of
+ * outliving it.
  */
-function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }): Promise<RunResult> {
+export function run(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let timedOut = false
     let aborted = false
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // detach: the child becomes a process-group LEADER so killGroup() can signal
+      // the worker (a grandchild, after the dsh CLI re-execs) as well as the CLI.
+      detached: true,
+    })
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGKILL')
+      killGroup(child)
     }, options.timeoutMs)
     const signal = options.signal
     const onAbort = (): void => {
       if (aborted) return
       aborted = true
       stderr += `\n[cancelled: the calling client disconnected; killing ${command} pid ${String(child.pid)}]`
-      child.kill('SIGKILL')
+      killGroup(child)
     }
     const cleanup = (): void => {
       clearTimeout(timer)
@@ -275,6 +319,10 @@ function run(command: string, args: string[], options: { cwd: string; env: NodeJ
     })
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       cleanup()
+      // A descendant that outlived the direct child (the dsh worker after a CLI
+      // re-exec) is still in the group: reap it on clean AND dirty exits, so no
+      // orphan keeps holding RSS against the harness memory cap.
+      killGroup(child)
       resolve({ code, signal, stdout, stderr, timedOut, aborted })
     })
   })

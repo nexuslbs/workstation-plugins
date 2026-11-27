@@ -29,7 +29,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { apply, name, validateBriefing } from '../index.ts'
+import { apply, name, run, validateBriefing } from '../index.ts'
 
 const FAKE_CLI = `#!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -739,3 +739,136 @@ test('validateBriefing flags a missing section, a bad /opt path and a credential
   assert.ok(!problems.join(' ').includes('SUPER-SECRET-VALUE'), 'the matched credential value must never be echoed')
 })
 
+
+// --- process-group kill: a worker must not outlive its dispatch (thread 5935) ---
+//
+// The dsh CLI re-execs into a worker process, so the process that actually holds the
+// tokens and the RSS is a GRANDCHILD of the one this plugin spawns. Production leaked
+// `node /harness/apps/cli/lib/bin.js developer [dsh-session role=developer project=ai
+// id=developer-ai-20261127-141436-hfjri]` for three days (428 MB RSS) because
+// `child.kill('SIGKILL')` signalled only the direct child: the real worker survived as
+// an orphan reparented to PID 1, helped exhaust the harness memory cap and made the
+// cgroup OOM killer SIGKILL the NEW workers (`exitCode: null`, no session dir, no
+// artifact).
+//
+// These tests spawn a direct child that itself spawns a long `sleep` grandchild and
+// prove BOTH are dead after (a) a timeout kill and (b) a clean exit that left the
+// grandchild behind.
+
+/** The direct child: spawns a long `sleep` grandchild, records both pids, then hangs or exits. */
+const GRANDCHILD_SPAWNER = `import { spawn } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const mode = process.argv[2]
+const pidFile = process.argv[3]
+const grandchild = spawn('sleep', ['300'], { stdio: 'ignore' })
+const alive = (pid) => {
+  try {
+    readFileSync('/proc/' + pid + '/stat')
+    return true
+  } catch {
+    return false
+  }
+}
+writeFileSync(pidFile, JSON.stringify({
+  child: process.pid,
+  grandchild: grandchild.pid,
+  grandchildAlive: grandchild.pid !== undefined && alive(grandchild.pid),
+}))
+if (mode === 'hang') setInterval(() => {}, 1000)
+else process.exit(0)
+`
+
+/** A fixture whose "harness CLI" is the grandchild spawner (no plugin provisioning needed). */
+function spawnerFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'agent-run-group-'))
+  const script = join(root, 'grandchild-spawner.mjs')
+  writeFileSync(script, GRANDCHILD_SPAWNER)
+  return { root, script, pidFile: join(root, 'pids.json') }
+}
+
+/** `/proc/<pid>` state (`'Z'` = dead, only awaiting reaping) or null when the pid is gone. */
+function pidState(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
+  } catch {
+    return null
+  }
+}
+
+/** True when a pid is GONE or a zombie (dead: it no longer holds any RSS), polled up to `budgetMs`. */
+async function goneOrZombie(pid, budgetMs = 4000) {
+  const deadline = Date.now() + budgetMs
+  for (;;) {
+    const state = pidState(pid)
+    if (state === null || state === 'Z') return { ok: true, state }
+    if (Date.now() > deadline) return { ok: false, state }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+/** Best-effort cleanup so a FAILING run cannot poison the container with its own leak. */
+function reap(childPid, grandchildPid) {
+  for (const pid of [grandchildPid, childPid]) {
+    if (typeof pid !== 'number' || pid <= 1) continue
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {}
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {}
+  }
+}
+
+test('a TIMED-OUT run SIGKILLs the whole process group: the worker grandchild dies with its dispatch', async () => {
+  const fix = spawnerFixture()
+  let pids
+  try {
+    const result = await run(process.execPath, [fix.script, 'hang', fix.pidFile], {
+      cwd: fix.root,
+      env: process.env,
+      timeoutMs: 1500,
+    })
+    assert.equal(result.timedOut, true, 'the run must hit its timeout')
+    pids = JSON.parse(readFileSync(fix.pidFile, 'utf8'))
+
+    // NON-VACUOUS: the direct child really did create a LIVE grandchild (the "worker")
+    assert.ok(Number.isInteger(pids.child), `the direct child pid must be recorded: ${JSON.stringify(pids)}`)
+    assert.notEqual(pids.child, process.pid)
+    assert.ok(Number.isInteger(pids.grandchild), `the grandchild pid must be recorded: ${JSON.stringify(pids)}`)
+    assert.notEqual(pids.grandchild, pids.child)
+    assert.equal(pids.grandchildAlive, true, 'the grandchild must be alive when the direct child records it')
+
+    // THE FIX: both the direct child and the worker grandchild are dead
+    for (const [label, pid] of [['direct child', pids.child], ['worker grandchild', pids.grandchild]]) {
+      const { ok, state } = await goneOrZombie(pid)
+      assert.ok(ok, `${label} pid ${pid} is still ALIVE (state ${state}) after the timeout kill`)
+    }
+  } finally {
+    if (pids !== undefined) reap(pids.child, pids.grandchild)
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
+
+test('a CLEAN exit still reaps a surviving grandchild: the exit hook kills the process group', async () => {
+  const fix = spawnerFixture()
+  let pids
+  try {
+    const result = await run(process.execPath, [fix.script, 'exit', fix.pidFile], {
+      cwd: fix.root,
+      env: process.env,
+      timeoutMs: 10000,
+    })
+    assert.equal(result.timedOut, false, 'this run must NOT hit its timeout')
+    assert.equal(result.code, 0, `the direct child must exit 0: ${result.stderr}`)
+    pids = JSON.parse(readFileSync(fix.pidFile, 'utf8'))
+    assert.equal(pids.grandchildAlive, true, 'the grandchild must be alive when the direct child records it')
+
+    const { ok, state } = await goneOrZombie(pids.grandchild)
+    assert.ok(ok, `the orphaned worker grandchild pid ${pids.grandchild} is still ALIVE (state ${state}) after a clean exit`)
+  } finally {
+    if (pids !== undefined) reap(pids.child, pids.grandchild)
+    rmSync(fix.root, { recursive: true, force: true })
+  }
+})
